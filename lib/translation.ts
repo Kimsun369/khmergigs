@@ -16,7 +16,21 @@ const memoryCache = new Map<string, string>()
 const pendingTranslations = new Map<string, Promise<string>>()
 
 // Storage key for persistent client-side cache
-const STORAGE_KEY = "kg_khmer_translations_v3"
+// Bump when translation handling changes so stale, incorrect MT results are ignored.
+const STORAGE_KEY = "kg_khmer_translations_v4"
+
+// Product names and technical terms should remain in their familiar form.
+// Protect longer names first (for example, "Spring Boot" before "Spring") so
+// machine translation does not turn framework names into ordinary Khmer words.
+const TECH_TERMS = [
+  "Spring Boot", "Spring Framework", "Spring Cloud", "Next.js", "Node.js",
+  "PostgreSQL", "Postgres", "Kubernetes", "TypeScript", "JavaScript",
+  "Power BI", "WordPress", "GitHub", "GitLab", "C++", "C#", ".NET",
+  "Java", "Python", "Docker", "React", "Angular", "Vue.js", "PHP",
+  "Laravel", "Django", "Flutter", "HTML", "CSS", "SQL", "API", "AWS",
+  "Azure", "Linux", "Android", "iOS", "Excel", "Git", "Node", "MySQL",
+  "MongoDB", "Redis", "Kafka", "Jenkins", "Terraform", "Figma",
+]
 
 // Load existing cache from localStorage safely
 function getStorageCache(): Record<string, string> {
@@ -354,13 +368,28 @@ export async function translateDynamicToKhmer(text: string): Promise<string> {
   // intact in English rather than asking it to translate a truncated phrase.
   if (new TextEncoder().encode(cleanInput).length > 500) return cleanInput
 
-  // Already-Khmer names and mixed-script text should not be sent as English.
+  // Existing Khmer text should not be sent to the English-to-Khmer service.
   if (/[\u1780-\u17ff]/.test(cleanInput)) return cleanInput
 
   // 1. Check instant static dictionary
   if (STATIC_DICTIONARY[cleanInput]) {
     return STATIC_DICTIONARY[cleanInput]
   }
+
+  // Keep technology and product names intact while translating the ordinary
+  // words around them (e.g. "Senior Spring Boot Developer").
+  const protectedTerms: string[] = []
+  const escapedTerms = [...TECH_TERMS]
+    .sort((a, b) => b.length - a.length)
+    .map((term) => term.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))
+  const termPattern = new RegExp(`(^|[^A-Za-z0-9])(${escapedTerms.join("|")})(?=$|[^A-Za-z0-9])`, "gi")
+  const translationInput = cleanInput.replace(termPattern, (match, prefix: string, term: string) => {
+    const index = protectedTerms.push(term) - 1
+    return `${prefix}ZXQTECH${index}QXZ`
+  })
+
+  // The string contains only technical terms, so there is nothing to translate.
+  if (!/[A-Za-z]/.test(translationInput.replace(/ZXQTECH\d+QXZ/g, ""))) return cleanInput
 
   // 2. Check memory cache
   if (memoryCache.has(cleanInput)) {
@@ -381,7 +410,7 @@ export async function translateDynamicToKhmer(text: string): Promise<string> {
   const request = (async () => {
     let timer: ReturnType<typeof setTimeout> | undefined
     try {
-    const encoded = encodeURIComponent(cleanInput)
+    const encoded = encodeURIComponent(translationInput)
     const url = `https://api.mymemory.translated.net/get?q=${encoded}&langpair=en|km`
     
     // 3.5-second timeout to maintain rapid UI responsiveness
@@ -397,8 +426,12 @@ export async function translateDynamicToKhmer(text: string): Promise<string> {
         const cleaned = cleanKhmerText(rawTranslated)
         // Ensure result isn't just an error message
         if (cleaned && !cleaned.toLowerCase().includes("mymemory") && !cleaned.toLowerCase().includes("quota")) {
-          saveToCache(cleanInput, cleaned)
-          return cleaned
+          const restored = cleaned.replace(/ZXQTECH(\d+)QXZ/gi, (marker, index: string) => {
+            const term = protectedTerms[Number(index)]
+            return term ?? marker
+          })
+          saveToCache(cleanInput, restored)
+          return restored
         }
       }
     }

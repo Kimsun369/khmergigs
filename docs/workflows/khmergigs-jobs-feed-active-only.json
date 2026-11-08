@@ -1,0 +1,1685 @@
+{
+  "nodes": [
+    {
+      "parameters": {
+        "url": "https://api.reliefweb.int/v2/jobs?appname=KhmerGigs-TelegramMiniApp-X7K29&preset=latest&profile=full&filter[field]=country&filter[value]=Cambodia&limit=20",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          }
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        320,
+        -1344
+      ],
+      "id": "d5fc1159-4cad-4e39-9758-52eb7b36f418",
+      "name": "ReliefWeb"
+    },
+    {
+      "parameters": {
+        "url": "https://eurocham-cambodia.org/job_board/",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "text"
+            }
+          }
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        320,
+        -1136
+      ],
+      "id": "a07ffc94-bec3-45ff-b88a-c2083d16d517",
+      "name": "EuroCham"
+    },
+    {
+      "parameters": {
+        "url": "https://khmergigs.misty-river-049a.workers.dev/?url=https://t.me/s/CamHRjobs",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "text"
+            }
+          }
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        320,
+        -944
+      ],
+      "id": "b79db41b-e846-4af3-8c05-7bbc0ad59148",
+      "name": "CamHR"
+    },
+    {
+      "parameters": {
+        "jsCode": "const items = $input.first().json.data || [];\nreturn items.map(item => {\n  const fields = item.fields || {};\n  return {\n    json: {\n      source: \"ReliefWeb\",\n      link: fields.url || `https://reliefweb.int/node/${item.id}`,\n      title: fields.title || \"\",\n      company: fields.source && fields.source[0] ? fields.source[0].name : \"N/A\",\n      location: fields.country && fields.country[0] ? fields.country[0].name : \"Cambodia\",\n      description: fields.body || fields.body_html || \"\"\n    }\n  };\n});"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        576,
+        -1344
+      ],
+      "id": "c504e002-68a5-410b-afd9-c0ef42b516e9",
+      "name": "ReliefWeb Code"
+    },
+    {
+      "parameters": {
+        "jsCode": "// ============================================================\n// SCRAPER: EuroCham\n// Output: standardized 7-field schema for downstream pipeline\n// Normalize Job Data -> Dedupe -> Groq AI -> Google Sheets\n// ============================================================\n\nconst html = $input.first()?.json?.data || \"\";\n\nfunction sanitize(text) {\n  if (!text) return \"\";\n  let t = String(text);\n\n  t = t.replace(/<[^>]*>?/g, \" \");\n\n  const entities = {\n    \"&nbsp;\": \" \", \"&amp;\": \"&\", \"&lt;\": \"<\", \"&gt;\": \">\",\n    \"&quot;\": '\"', \"&#39;\": \"'\", \"&apos;\": \"'\", \"&#038;\": \"&\",\n    \"&#8211;\": \"-\", \"&#8212;\": \"-\", \"&rsquo;\": \"'\", \"&lsquo;\": \"'\",\n    \"&rdquo;\": '\"', \"&ldquo;\": '\"', \"&ndash;\": \"-\", \"&mdash;\": \"-\"\n  };\n  t = t.replace(/&nbsp;|&amp;|&lt;|&gt;|&quot;|&#39;|&apos;|&#038;|&#8211;|&#8212;|&rsquo;|&lsquo;|&rdquo;|&ldquo;|&ndash;|&mdash;/g, m => entities[m]);\n  t = t.replace(/&#(\\d+);/g, (_, dec) => String.fromCharCode(dec));\n  t = t.replace(/[*_#`\\[\\]]/g, \"\");\n  t = t.replace(/\\s+/g, \" \").trim();\n\n  return t;\n}\n\nfunction extractId(url) {\n  if (!url) return \"\";\n  const match = String(url).match(/(\\d+)/);\n  return match ? match[1] : \"\";\n}\n\nlet results = [];\nconst blocks = html.match(/<div class=\"elementor-posts-container[^>]*>([\\s\\S]*?)<\\/article>/g) || [html];\n\nfor (let block of blocks) {\n  let innerMatch;\n  const itemRegex = /<h4 class=\"elementor-heading-title[^>]*>\\s*<a href=\"([^\"]+)\">([\\s\\S]*?)<\\/a>([\\s\\S]*?)(?=<h4|$)/g;\n\n  while ((innerMatch = itemRegex.exec(block)) !== null) {\n    const url = innerMatch[1];\n    const fullTitleText = sanitize(innerMatch[2]);\n    const descriptiveText = sanitize(innerMatch[3]);\n\n    let jobTitle = fullTitleText;\n    let organisation = \"N/A\";\n    let location = \"Cambodia\";\n\n    const dashSeparators = [\" – \", \" — \", \" - \"];\n    for (let separator of dashSeparators) {\n      if (fullTitleText.includes(separator)) {\n        let parts = fullTitleText.split(separator);\n        jobTitle = parts[0].trim();\n        organisation = parts[1].trim();\n        break;\n      }\n    }\n\n    if (descriptiveText.includes(\"Company.\")) {\n      const compMatch = descriptiveText.match(/Company\\.\\s*([^.]+)/i);\n      if (compMatch) organisation = compMatch[1].trim();\n    }\n\n    if (descriptiveText.includes(\"Location.\")) {\n      const locMatch = descriptiveText.match(/Location\\.\\s*([^.]+)/i);\n      if (locMatch && locMatch[1].trim().length > 3) {\n        location = locMatch[1].trim();\n      }\n    }\n\n    jobTitle = sanitize(jobTitle);\n    organisation = sanitize(organisation) || \"N/A\";\n    location = sanitize(location) || \"Cambodia\";\n\n    if (!jobTitle) continue;\n\n    results.push({\n      json: {\n        source: \"EuroCham\",\n        id: extractId(url),\n        title: jobTitle,\n        organisation: organisation,\n        location: location,\n        link: url || \"\",\n        description: descriptiveText,\n        // Downstream normalization keys\n        raw_title: jobTitle,\n        raw_company: organisation,\n        raw_location: location,\n        raw_description: descriptiveText,\n        source_url: url\n      }\n    });\n  }\n}\n\n// Safety cap to top 15 newest items per run\nreturn results.slice(0, 15);"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        608,
+        -1136
+      ],
+      "id": "1702b93d-97ee-4980-9376-276601a956c6",
+      "name": "EuroCham Code"
+    },
+    {
+      "parameters": {
+        "jsCode": "// ============================================================\n// SCRAPER: CamHR (Telegram Channel)\n// Output: standardized 7-field schema for downstream pipeline\n// Normalize Job Data -> Dedupe -> Groq AI -> Google Sheets\n// ============================================================\n\nconst html = $input.first()?.json?.data || \"\";\nconst blockRegex = /<div class=\"tgme_widget_message_wrap[^>]*>([\\s\\S]*?)<\\/div>\\s*<\\/div>\\s*<\\/div>/g;\n\nfunction sanitize(text) {\n  if (!text) return \"\";\n  let t = String(text);\n\n  t = t.replace(/<[^>]*>?/g, \" \");\n\n  const entities = {\n    \"&nbsp;\": \" \", \"&amp;\": \"&\", \"&lt;\": \"<\", \"&gt;\": \">\",\n    \"&quot;\": '\"', \"&#39;\": \"'\", \"&apos;\": \"'\", \"&#33;\": \"!\",\n    \"&rsquo;\": \"'\", \"&lsquo;\": \"'\", \"&rdquo;\": '\"', \"&ldquo;\": '\"',\n    \"&ndash;\": \"-\", \"&mdash;\": \"-\"\n  };\n  t = t.replace(/&nbsp;|&amp;|&lt;|&gt;|&quot;|&#39;|&apos;|&#33;|&rsquo;|&lsquo;|&rdquo;|&ldquo;|&ndash;|&mdash;/g, m => entities[m]);\n  t = t.replace(/&#(\\d+);/g, (_, dec) => String.fromCharCode(dec));\n  t = t.replace(/[*_#`]/g, \"\");\n  t = t.replace(/\\s+/g, \" \").trim();\n\n  return t;\n}\n\nfunction stripEmoji(text) {\n  return String(text || \"\")\n    .replace(/[\\uE000-\\uF8FF]|\\uD83C[\\uDC00-\\uDFFF]|\\uD83D[\\uDC00-\\uDFFF]|[\\u2011-\\u26FF]|\\uD83E[\\uDD00-\\uDFFF]/g, \"\")\n    .trim();\n}\n\nfunction extractId(url) {\n  if (!url) return \"\";\n  const match = String(url).match(/(\\d+)/);\n  return match ? match[1] : \"\";\n}\n\nlet match;\nlet results = [];\n\nwhile ((match = blockRegex.exec(html)) !== null) {\n  const blockHtml = match[1];\n  const textMatch = blockHtml.match(/<div class=\"tgme_widget_message_text[^>]*>([\\s\\S]*?)<\\/div>/);\n  if (!textMatch) continue;\n\n  let rawText = textMatch[1]\n    .replace(/<br\\s*\\/?>/gi, '\\n')\n    .replace(/<\\/?[^>]+(>|$)/g, \"\")\n    .replace(/&amp;/g, \"&\")\n    .replace(/&quot;/g, '\"')\n    .replace(/&#33;/g, \"!\")\n    .replace(/&#39;/g, \"'\")\n    .trim();\n\n  if (rawText.length < 20 || rawText.toLowerCase().includes(\"welcome to\")) continue;\n\n  const lowerText = rawText.toLowerCase();\n  const jobHallmarks = [\n    \"position\", \"requirement\", \"deadline\", \"closing date\", \"salary\", \"apply\",\n    \"cv\", \"ជ្រើសរើស\", \"ត្រូវការ\", \"តួនាទី\", \"ប្រាក់ខែ\", \"លក្ខខណ្ឌ\"\n  ];\n  let score = 0;\n  for (let hallmark of jobHallmarks) {\n    if (lowerText.includes(hallmark)) score++;\n  }\n  if (score < 1) continue;\n\n  let lines = rawText.split('\\n').map(l => l.trim()).filter(l => l.length > 0);\n  let title = stripEmoji(lines[0] || \"\");\n\n  let organisation = \"N/A\";\n  const orgMatchEnglish = rawText.match(/(?:opportunity from|hiring from)\\s+([^\\n,.:]+)/i) ||\n                          rawText.match(/([^\\n,.:]+(?:co\\.,\\s*ltd|plc|group|trading|solutions|capital|finance))/i);\n  const orgMatchKhmer = rawText.match(/ក្រុមហ៊ុន\\s+([^\\n\\s៖]+[^\\n៖]*)/);\n\n  if (orgMatchEnglish) {\n    organisation = orgMatchEnglish[1].trim();\n  } else if (orgMatchKhmer) {\n    organisation = orgMatchKhmer[1].trim();\n  } else if (title.includes(\"ត្រូវការ\") || title.includes(\"ជ្រើសរើស\")) {\n    let splitTitle = title.split(/(?:ត្រូវការ|ជ្រើសរើស)/);\n    if (splitTitle[0].trim().length > 2) organisation = splitTitle[0].trim();\n  }\n\n  organisation = stripEmoji(organisation).replace(/^[:\\s-]+|[:\\s-]+$/g, '').trim();\n  if (!organisation) organisation = \"N/A\";\n\n  const location = \"Cambodia\";\n  const linkMatch = blockHtml.match(/href=\"([^\"]+?camhrjobs\\/\\d+)\"/);\n  const url = linkMatch ? linkMatch[1] : \"https://t.me/s/camhrjobs\";\n\n  results.push({\n    json: {\n      source: \"CamHR\",\n      id: extractId(url),\n      title: sanitize(title),\n      organisation: sanitize(organisation) || \"N/A\",\n      location: location,\n      link: url,\n      description: sanitize(rawText),\n      // Downstream normalization keys\n      raw_title: sanitize(title),\n      raw_company: sanitize(organisation) || \"N/A\",\n      raw_location: location,\n      raw_description: sanitize(rawText),\n      source_url: url\n    }\n  });\n}\n\n// Safety cap to top 15 newest items per run\nreturn results.slice(0, 15);"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        608,
+        -944
+      ],
+      "id": "ea3b4922-0280-4de7-bfa1-70a439961fbe",
+      "name": "CamHR Code"
+    },
+    {
+      "parameters": {
+        "url": "https://khmergigs.misty-river-049a.workers.dev/?url=https://telegram.me/s/CBjobopportunity",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "text"
+            }
+          }
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        320,
+        -752
+      ],
+      "id": "8ee986c7-3487-43db-91c5-cfb8647f2ad4",
+      "name": "CamboJob"
+    },
+    {
+      "parameters": {
+        "jsCode": "// ============================================================\n// SCRAPER: CamboJob (Telegram Channel)\n// Output: standardized schema for downstream pipeline\n// Normalize Job Data -> Dedupe -> Groq AI -> Google Sheets\n// ============================================================\n\nconst html = $input.first()?.json?.data || \"\";\nconst blockRegex = /<div class=\"tgme_widget_message_wrap[^>]*>([\\s\\S]*?)<\\/div>\\s*<\\/div>\\s*<\\/div>/g;\n\nfunction sanitize(text) {\n  if (!text) return \"\";\n  let t = String(text);\n  t = t.replace(/<[^>]*>?/g, \" \");\n  const entities = {\n    \"&nbsp;\": \" \", \"&amp;\": \"&\", \"&lt;\": \"<\", \"&gt;\": \">\", \"&quot;\": '\"',\n    \"&#39;\": \"'\", \"&apos;\": \"'\", \"&#33;\": \"!\", \"&rsquo;\": \"'\", \"&lsquo;\": \"'\",\n    \"&rdquo;\": '\"', \"&ldquo;\": '\"', \"&ndash;\": \"-\", \"&mdash;\": \"-\"\n  };\n  t = t.replace(/&nbsp;|&amp;|&lt;|&gt;|&quot;|&#39;|&apos;|&#33;|&rsquo;|&lsquo;|&rdquo;|&ldquo;|&ndash;|&mdash;/g, m => entities[m]);\n  t = t.replace(/&#(\\d+);/g, (_, dec) => String.fromCharCode(dec));\n  t = t.replace(/[*_#`]/g, \"\");\n  t = t.replace(/\\s+/g, \" \").trim();\n  return t;\n}\n\nfunction stripEmoji(text) {\n  return String(text || \"\")\n    .replace(/[\\uE000-\\uF8FF]|\\uD83C[\\uDC00-\\uDFFF]|\\uD83D[\\uDC00-\\uDFFF]|[\\u2011-\\u26FF]|\\uD83E[\\uDD00-\\uDFFF]/g, \"\")\n    .trim();\n}\n\nfunction extractId(url) {\n  if (!url) return \"\";\n  const match = String(url).match(/(\\d+)/);\n  return match ? match[1] : \"\";\n}\n\nlet match;\nlet results = [];\n\nwhile ((match = blockRegex.exec(html)) !== null) {\n  const blockHtml = match[1];\n  const textMatch = blockHtml.match(/<div class=\"tgme_widget_message_text[^>]*>([\\s\\S]*?)<\\/div>/);\n  if (!textMatch) continue;\n\n  let rawText = textMatch[1]\n    .replace(/<br\\s*\\/?>/gi, '\\n')\n    .replace(/<\\/?[^>]+(>|$)/g, \"\")\n    .replace(/&amp;/g, \"&\")\n    .replace(/&quot;/g, '\"')\n    .replace(/&#33;/g, \"!\")\n    .replace(/&#39;/g, \"'\")\n    .trim();\n\n  if (rawText.length < 20 || rawText.toLowerCase().includes(\"welcome to\")) continue;\n\n  const lowerText = rawText.toLowerCase();\n  const jobHallmarks = [\n    \"position\", \"requirement\", \"deadline\", \"closing date\", \"salary\", \"apply\",\n    \"cv\", \"ជ្រើសរើស\", \"ត្រូវការ\", \"តួនាទី\", \"ប្រាក់ខែ\", \"លក្ខខណ្ឌ\"\n  ];\n  let score = 0;\n  for (let hallmark of jobHallmarks) {\n    if (lowerText.includes(hallmark)) score++;\n  }\n  if (score < 1) continue;\n\n  let lines = rawText.split('\\n').map(l => l.trim()).filter(l => l.length > 0);\n  let title = stripEmoji(lines[0] || \"\");\n\n  let organisation = \"N/A\";\n  const orgMatch = rawText.match(/(?:company|organization|ក្រុមហ៊ុន|employer)\\s*:\\s*([^\\n]+)/i) ||\n                   rawText.match(/([^\\n,.:]+(?:co\\.,\\s*ltd|plc|group|trading|solutions|hospital|school|university|bank))/i);\n  if (orgMatch) {\n    organisation = orgMatch[1].trim();\n  }\n\n  organisation = stripEmoji(organisation).replace(/^[:\\s-]+|[:\\s-]+$/g, '').trim();\n  if (!organisation) organisation = \"N/A\";\n\n  const location = \"Cambodia\";\n  const linkMatch = blockHtml.match(/href=\"([^\"]+?CBjobopportunity\\/\\d+)\"/);\n  const url = linkMatch ? linkMatch[1] : \"https://t.me/s/CBjobopportunity\";\n\n  const cleanTitle = sanitize(title);\n  const cleanOrg = sanitize(organisation) || \"N/A\";\n  const cleanDesc = sanitize(rawText);\n\n  results.push({\n    json: {\n      source: \"CamboJob\",\n      id: extractId(url),\n      title: cleanTitle,\n      organisation: cleanOrg,\n      location: location,\n      link: url,\n      description: cleanDesc,\n      raw_title: cleanTitle,\n      raw_company: cleanOrg,\n      raw_location: location,\n      raw_description: cleanDesc,\n      source_url: url\n    }\n  });\n}\n\nreturn results.slice(0, 15);"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        608,
+        -752
+      ],
+      "id": "049b37ca-228a-4f65-9e4d-48b68f0b3d65",
+      "name": "CamboJob Code"
+    },
+    {
+      "parameters": {
+        "url": "https://khmergigs.misty-river-049a.workers.dev/?url=https://t.me/s/jobifyworks",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "text"
+            }
+          }
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        320,
+        -560
+      ],
+      "id": "c09cb20f-404a-4af7-b79f-bf779773e64e",
+      "name": "Jobtify"
+    },
+    {
+      "parameters": {
+        "jsCode": "// ============================================================\n// SCRAPER: Jobify (Telegram Channel)\n// Output: standardized schema for downstream pipeline\n// Normalize Job Data -> Dedupe -> Groq AI -> Google Sheets\n// ============================================================\n\nconst html = $input.first()?.json?.data || \"\";\nconst blockRegex = /<div class=\"tgme_widget_message_wrap[^>]*>([\\s\\S]*?)<\\/div>\\s*<\\/div>\\s*<\\/div>/g;\n\nfunction sanitize(text) {\n  if (!text) return \"\";\n  let t = String(text);\n  t = t.replace(/<[^>]*>?/g, \" \");\n  const entities = {\n    \"&nbsp;\": \" \", \"&amp;\": \"&\", \"&lt;\": \"<\", \"&gt;\": \">\", \"&quot;\": '\"',\n    \"&#39;\": \"'\", \"&apos;\": \"'\", \"&#33;\": \"!\", \"&rsquo;\": \"'\", \"&lsquo;\": \"'\",\n    \"&rdquo;\": '\"', \"&ldquo;\": '\"', \"&ndash;\": \"-\", \"&mdash;\": \"-\"\n  };\n  t = t.replace(/&nbsp;|&amp;|&lt;|&gt;|&quot;|&#39;|&apos;|&#33;|&rsquo;|&lsquo;|&rdquo;|&ldquo;|&ndash;|&mdash;/g, m => entities[m]);\n  t = t.replace(/&#(\\d+);/g, (_, dec) => String.fromCharCode(dec));\n  t = t.replace(/[*_#`]/g, \"\");\n  t = t.replace(/\\s+/g, \" \").trim();\n  return t;\n}\n\nfunction stripEmoji(text) {\n  return String(text || \"\")\n    .replace(/[\\uE000-\\uF8FF]|\\uD83C[\\uDC00-\\uDFFF]|\\uD83D[\\uDC00-\\uDFFF]|[\\u2011-\\u26FF]|\\uD83E[\\uDD00-\\uDFFF]/g, \"\")\n    .trim();\n}\n\nfunction extractId(url) {\n  if (!url) return \"\";\n  const match = String(url).match(/(\\d+)/);\n  return match ? match[1] : \"\";\n}\n\nlet match;\nlet results = [];\n\nwhile ((match = blockRegex.exec(html)) !== null) {\n  const blockHtml = match[1];\n  const textMatch = blockHtml.match(/<div class=\"tgme_widget_message_text[^>]*>([\\s\\S]*?)<\\/div>/);\n  if (!textMatch) continue;\n\n  let rawText = textMatch[1]\n    .replace(/<br\\s*\\/?>/gi, '\\n')\n    .replace(/<\\/?[^>]+(>|$)/g, \"\")\n    .replace(/&amp;/g, \"&\")\n    .replace(/&quot;/g, '\"')\n    .replace(/&#33;/g, \"!\")\n    .replace(/&#39;/g, \"'\")\n    .trim();\n\n  if (rawText.length < 20 || rawText.toLowerCase().includes(\"welcome to\")) continue;\n\n  const lowerText = rawText.toLowerCase();\n  const jobHallmarks = [\n    \"position\", \"requirement\", \"deadline\", \"closing date\", \"salary\", \"apply\",\n    \"cv\", \"ជ្រើសរើស\", \"ត្រូវការ\", \"តួនាទី\", \"ប្រាក់ខែ\", \"លក្ខខណ្ឌ\"\n  ];\n  let score = 0;\n  for (let hallmark of jobHallmarks) {\n    if (lowerText.includes(hallmark)) score++;\n  }\n  if (score < 1) continue;\n\n  let lines = rawText.split('\\n').map(l => l.trim()).filter(l => l.length > 0);\n  let title = stripEmoji(lines[0] || \"\");\n\n  let organisation = \"N/A\";\n  const orgMatch = rawText.match(/(?:company|organization|ក្រុមហ៊ុន|employer)\\s*:\\s*([^\\n]+)/i) ||\n                   rawText.match(/([^\\n,.:]+(?:co\\.,\\s*ltd|plc|group|trading|solutions|capital|finance))/i);\n  if (orgMatch) {\n    organisation = orgMatch[1].trim();\n  }\n\n  organisation = stripEmoji(organisation).replace(/^[:\\s-]+|[:\\s-]+$/g, '').trim();\n  if (!organisation) organisation = \"N/A\";\n\n  const location = \"Cambodia\";\n  const linkMatch = blockHtml.match(/href=\"([^\"]+?jobifyworks\\/\\d+)\"/);\n  const url = linkMatch ? linkMatch[1] : \"https://t.me/s/jobifyworks\";\n\n  const cleanTitle = sanitize(title);\n  const cleanOrg = sanitize(organisation) || \"N/A\";\n  const cleanDesc = sanitize(rawText);\n\n  results.push({\n    json: {\n      source: \"Jobify\",\n      id: extractId(url),\n      title: cleanTitle,\n      organisation: cleanOrg,\n      location: location,\n      link: url,\n      description: cleanDesc,\n      raw_title: cleanTitle,\n      raw_company: cleanOrg,\n      raw_location: location,\n      raw_description: cleanDesc,\n      source_url: url\n    }\n  });\n}\n\nreturn results.slice(0, 15);"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        608,
+        -560
+      ],
+      "id": "88893a7c-35a2-4c41-a461-a47147939fc6",
+      "name": "Jobtify Code"
+    },
+    {
+      "parameters": {
+        "url": "https://khmergigs.misty-river-049a.workers.dev/?url=https://t.me/s/BongThomCom",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "text"
+            }
+          }
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        320,
+        -384
+      ],
+      "id": "6e1ee40f-efc1-4556-9219-2c4f7f88cd2f",
+      "name": "BongThom"
+    },
+    {
+      "parameters": {
+        "jsCode": "// ============================================================\n// SCRAPER: BongThom (Telegram Channel)\n// Output: standardized schema for downstream pipeline\n// Normalize Job Data -> Dedupe -> Groq AI -> Google Sheets\n// ============================================================\n\nconst html = $input.first()?.json?.data || \"\";\nconst blockRegex = /<div class=\"tgme_widget_message_wrap[^>]*>([\\s\\S]*?)<\\/div>\\s*<\\/div>\\s*<\\/div>/g;\n\nfunction sanitize(text) {\n  if (!text) return \"\";\n  let t = String(text);\n  t = t.replace(/<[^>]*>?/g, \" \");\n  const entities = {\n    \"&nbsp;\": \" \", \"&amp;\": \"&\", \"&lt;\": \"<\", \"&gt;\": \">\", \"&quot;\": '\"',\n    \"&#39;\": \"'\", \"&apos;\": \"'\", \"&#33;\": \"!\", \"&rsquo;\": \"'\", \"&lsquo;\": \"'\",\n    \"&rdquo;\": '\"', \"&ldquo;\": '\"', \"&ndash;\": \"-\", \"&mdash;\": \"-\"\n  };\n  t = t.replace(/&nbsp;|&amp;|&lt;|&gt;|&quot;|&#39;|&apos;|&#33;|&rsquo;|&lsquo;|&rdquo;|&ldquo;|&ndash;|&mdash;/g, m => entities[m]);\n  t = t.replace(/&#(\\d+);/g, (_, dec) => String.fromCharCode(dec));\n  t = t.replace(/[*_#`]/g, \"\");\n  t = t.replace(/\\s+/g, \" \").trim();\n  return t;\n}\n\nfunction stripEmoji(text) {\n  return String(text || \"\")\n    .replace(/[\\uE000-\\uF8FF]|\\uD83C[\\uDC00-\\uDFFF]|\\uD83D[\\uDC00-\\uDFFF]|[\\u2011-\\u26FF]|\\uD83E[\\uDD00-\\uDFFF]/g, \"\")\n    .trim();\n}\n\nfunction extractId(url) {\n  if (!url) return \"\";\n  const match = String(url).match(/(\\d+)/);\n  return match ? match[1] : \"\";\n}\n\nlet match;\nlet results = [];\n\nwhile ((match = blockRegex.exec(html)) !== null) {\n  const blockHtml = match[1];\n  const textMatch = blockHtml.match(/<div class=\"tgme_widget_message_text[^>]*>([\\s\\S]*?)<\\/div>/);\n  if (!textMatch) continue;\n\n  let rawText = textMatch[1]\n    .replace(/<br\\s*\\/?>/gi, '\\n')\n    .replace(/<\\/?[^>]+(>|$)/g, \"\")\n    .replace(/&amp;/g, \"&\")\n    .replace(/&quot;/g, '\"')\n    .replace(/&#33;/g, \"!\")\n    .replace(/&#39;/g, \"'\")\n    .trim();\n\n  if (rawText.length < 20 || rawText.toLowerCase().includes(\"welcome to\")) continue;\n\n  const lowerText = rawText.toLowerCase();\n  const jobHallmarks = [\n    \"position\", \"requirement\", \"deadline\", \"closing date\", \"salary\", \"apply\",\n    \"cv\", \"ជ្រើសរើស\", \"ត្រូវការ\", \"តួនាទី\", \"ប្រាក់ខែ\", \"លក្ខខណ្ឌ\", \"bongthom.com\"\n  ];\n  let score = 0;\n  for (let hallmark of jobHallmarks) {\n    if (lowerText.includes(hallmark)) score++;\n  }\n  if (score < 1) continue;\n\n  let lines = rawText.split('\\n').map(l => l.trim()).filter(l => l.length > 0);\n  let title = stripEmoji(lines[0] || \"\");\n  title = title.replace(/^[-•\\s]+/, '').trim();\n\n  let organisation = \"N/A\";\n  const orgMatch = rawText.match(/(?:company|organization|ក្រុមហ៊ុន|employer|hiring)\\s*:\\s*([^\\n]+)/i) ||\n                   rawText.match(/([^\\n,.:]+(?:co\\.,\\s*ltd|plc|group|trading|solutions|hospital|school|university|bank))/i);\n  if (orgMatch) {\n    organisation = orgMatch[1].trim();\n  }\n\n  organisation = stripEmoji(organisation).replace(/^[:\\s-]+|[:\\s-]+$/g, '').trim();\n  if (!organisation) organisation = \"N/A\";\n\n  const location = \"Cambodia\";\n  const linkMatch = blockHtml.match(/href=\"([^\"]+?BongThomCom\\/\\d+)\"/);\n  const url = linkMatch ? linkMatch[1] : \"https://t.me/s/BongThomCom\";\n\n  const cleanTitle = sanitize(title);\n  const cleanOrg = sanitize(organisation) || \"N/A\";\n  const cleanDesc = sanitize(rawText);\n\n  results.push({\n    json: {\n      source: \"BongThom\",\n      id: extractId(url),\n      title: cleanTitle,\n      organisation: cleanOrg,\n      location: location,\n      link: url,\n      description: cleanDesc,\n      raw_title: cleanTitle,\n      raw_company: cleanOrg,\n      raw_location: location,\n      raw_description: cleanDesc,\n      source_url: url\n    }\n  });\n}\n\nreturn results.slice(0, 15);"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        608,
+        -384
+      ],
+      "id": "7d770e1f-25d7-45c0-81d7-9a4c4984da15",
+      "name": "BongThom Code"
+    },
+    {
+      "parameters": {
+        "url": "https://khmergigs.misty-river-049a.workers.dev/?url=https://t.me/s/khmeronlinejobs",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "text"
+            }
+          }
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        320,
+        -208
+      ],
+      "id": "0a61a5f1-5f7f-489f-b191-5c4de03176da",
+      "name": "Khmer Online Jobs"
+    },
+    {
+      "parameters": {
+        "jsCode": "// ============================================================\n// SCRAPER: KhmerOnlineJobs (Telegram Channel)\n// Output: standardized schema for downstream pipeline\n// Normalize Job Data -> Dedupe -> Groq AI -> Google Sheets\n// ============================================================\n\nconst html = $input.first()?.json?.data || \"\";\nconst blockRegex = /<div class=\"tgme_widget_message_wrap[^>]*>([\\s\\S]*?)<\\/div>\\s*<\\/div>\\s*<\\/div>/g;\n\nfunction sanitize(text) {\n  if (!text) return \"\";\n  let t = String(text);\n  t = t.replace(/<[^>]*>?/g, \" \");\n  const entities = {\n    \"&nbsp;\": \" \", \"&amp;\": \"&\", \"&lt;\": \"<\", \"&gt;\": \">\", \"&quot;\": '\"',\n    \"&#39;\": \"'\", \"&apos;\": \"'\", \"&#33;\": \"!\", \"&rsquo;\": \"'\", \"&lsquo;\": \"'\",\n    \"&rdquo;\": '\"', \"&ldquo;\": '\"', \"&ndash;\": \"-\", \"&mdash;\": \"-\"\n  };\n  t = t.replace(/&nbsp;|&amp;|&lt;|&gt;|&quot;|&#39;|&apos;|&#33;|&rsquo;|&lsquo;|&rdquo;|&ldquo;|&ndash;|&mdash;/g, m => entities[m]);\n  t = t.replace(/&#(\\d+);/g, (_, dec) => String.fromCharCode(dec));\n  t = t.replace(/[*_#`]/g, \"\");\n  t = t.replace(/\\s+/g, \" \").trim();\n  return t;\n}\n\nfunction stripEmoji(text) {\n  return String(text || \"\")\n    .replace(/[\\uE000-\\uF8FF]|\\uD83C[\\uDC00-\\uDFFF]|\\uD83D[\\uDC00-\\uDFFF]|[\\u2011-\\u26FF]|\\uD83E[\\uDD00-\\uDFFF]/g, \"\")\n    .trim();\n}\n\nfunction extractId(url) {\n  if (!url) return \"\";\n  const match = String(url).match(/(\\d+)/);\n  return match ? match[1] : \"\";\n}\n\nlet match;\nlet results = [];\n\nwhile ((match = blockRegex.exec(html)) !== null) {\n  const blockHtml = match[1];\n  const textMatch = blockHtml.match(/<div class=\"tgme_widget_message_text[^>]*>([\\s\\S]*?)<\\/div>/);\n  if (!textMatch) continue;\n\n  let rawText = textMatch[1]\n    .replace(/<br\\s*\\/?>/gi, '\\n')\n    .replace(/<\\/?[^>]+(>|$)/g, \"\")\n    .replace(/&amp;/g, \"&\")\n    .replace(/&quot;/g, '\"')\n    .replace(/&#33;/g, \"!\")\n    .replace(/&#39;/g, \"'\")\n    .trim();\n\n  if (rawText.length < 20 || rawText.toLowerCase().includes(\"welcome to\")) continue;\n\n  const lowerText = rawText.toLowerCase();\n  const jobHallmarks = [\n    \"position\", \"requirement\", \"deadline\", \"closing date\", \"salary\", \"apply\",\n    \"cv\", \"ជ្រើសរើស\", \"ត្រូវការ\", \"តួនាទី\", \"ប្រាក់ខែ\", \"លក្ខខណ្ឌ\"\n  ];\n  let score = 0;\n  for (let hallmark of jobHallmarks) {\n    if (lowerText.includes(hallmark)) score++;\n  }\n  if (score < 1) continue;\n\n  let lines = rawText.split('\\n').map(l => l.trim()).filter(l => l.length > 0);\n  let title = stripEmoji(lines[0] || \"\");\n  if (title.startsWith(\"-\") || title.startsWith(\"•\")) {\n    title = title.replace(/^[-•\\s]+/, '').split(':')[0].trim();\n  }\n\n  let organisation = \"N/A\";\n  const orgMatch = rawText.match(/:\\s*([^:\\n]+)\\s*:\\s*(?:\\d+.*?|negotiable|\\$\\d+)/i) ||\n                   rawText.match(/(?:company|organization|ក្រុមហ៊ុន|employer)\\s*:\\s*([^\\n]+)/i) ||\n                   rawText.match(/([^\\n,.:]+(?:co\\.,\\s*ltd|plc|group|trading|solutions|association|agency|institute|bank|school|organization))/i);\n  if (orgMatch) {\n    organisation = orgMatch[1].trim();\n  }\n\n  organisation = stripEmoji(organisation).replace(/^[:\\s.-]+|[:\\s.-]+$/g, '').trim();\n  if (!organisation) organisation = \"N/A\";\n\n  const location = \"Cambodia\";\n  const linkMatch = blockHtml.match(/href=\"([^\"]+?\\/[A-Za-z0-9_]+\\/\\d+)\"/);\n  const url = linkMatch ? linkMatch[1] : \"https://t.me/s/khmeronlinejobs\";\n\n  const cleanTitle = sanitize(title);\n  const cleanOrg = sanitize(organisation) || \"N/A\";\n  const cleanDesc = sanitize(rawText);\n\n  results.push({\n    json: {\n      source: \"KhmerOnlineJobs\",\n      id: extractId(url),\n      title: cleanTitle,\n      organisation: cleanOrg,\n      location: location,\n      link: url,\n      description: cleanDesc,\n      raw_title: cleanTitle,\n      raw_company: cleanOrg,\n      raw_location: location,\n      raw_description: cleanDesc,\n      source_url: url\n    }\n  });\n}\n\nreturn results.slice(0, 15);"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        608,
+        -208
+      ],
+      "id": "aac6cda2-e84e-4760-9fa8-6f4b98c364d6",
+      "name": "Khmer Online Jobs Code"
+    },
+    {
+      "parameters": {
+        "url": "https://khmergigs.misty-river-049a.workers.dev/?url=https://t.me/s/MyWorldCareersCambodia",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "text"
+            }
+          }
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        320,
+        -48
+      ],
+      "id": "c9d57fbd-6c62-4dde-8800-756a7c57591d",
+      "name": "MyWorld Careers Cambodia"
+    },
+    {
+      "parameters": {
+        "jsCode": "// ============================================================\n// SCRAPER: MyWorldCareers (Telegram Channel)\n// Output: standardized schema for downstream pipeline\n// Normalize Job Data -> Dedupe -> OpenRouter AI -> Google Sheets\n// ============================================================\n\nconst html = $input.first()?.json?.data || \"\";\nconst blockRegex = /<div class=\"tgme_widget_message_wrap[^>]*>([\\s\\S]*?)<\\/div>\\s*<\\/div>\\s*<\\/div>/g;\n\nfunction sanitize(text) {\n  if (!text) return \"\";\n  let t = String(text);\n  t = t.replace(/<[^>]*>?/g, \" \");\n  const entities = {\n    \"&nbsp;\": \" \", \"&amp;\": \"&\", \"&lt;\": \"<\", \"&gt;\": \">\", \"&quot;\": '\"',\n    \"&#39;\": \"'\", \"&apos;\": \"'\", \"&#33;\": \"!\", \"&rsquo;\": \"'\", \"&lsquo;\": \"'\",\n    \"&rdquo;\": '\"', \"&ldquo;\": '\"', \"&ndash;\": \"-\", \"&mdash;\": \"-\"\n  };\n  t = t.replace(/&nbsp;|&amp;|&lt;|&gt;|&quot;|&#39;|&apos;|&#33;|&rsquo;|&lsquo;|&rdquo;|&ldquo;|&ndash;|&mdash;/g, m => entities[m]);\n  t = t.replace(/&#(\\d+);/g, (_, dec) => String.fromCharCode(dec));\n  t = t.replace(/[*_#`\\[\\]()]/g, \"\");\n  t = t.replace(/\\s+/g, \" \").trim();\n  return t;\n}\n\nfunction stripEmoji(text) {\n  return String(text || \"\")\n    .replace(/[\\uE000-\\uF8FF]|\\uD83C[\\uDC00-\\uDFFF]|\\uD83D[\\uDC00-\\uDFFF]|[\\u2011-\\u26FF]|\\uD83E[\\uDD00-\\uDFFF]/g, \"\")\n    .trim();\n}\n\nfunction extractId(url) {\n  if (!url) return \"\";\n  const match = String(url).match(/(\\d+)/);\n  return match ? match[1] : \"\";\n}\n\nlet match;\nlet results = [];\n\nwhile ((match = blockRegex.exec(html)) !== null) {\n  const blockHtml = match[1];\n  const textMatch = blockHtml.match(/<div class=\"tgme_widget_message_text[^>]*>([\\s\\S]*?)<\\/div>/);\n  if (!textMatch) continue;\n\n  let rawText = textMatch[1]\n    .replace(/<br\\s*\\/?>/gi, '\\n')\n    .replace(/<\\/?[^>]+(>|$)/g, \"\")\n    .replace(/&amp;/g, \"&\")\n    .replace(/&quot;/g, '\"')\n    .replace(/&#33;/g, \"!\")\n    .replace(/&#39;/g, \"'\")\n    .trim();\n\n  if (rawText.length < 20 || rawText.toLowerCase().includes(\"welcome to\")) continue;\n\n  const lowerText = rawText.toLowerCase();\n  const jobHallmarks = [\n    \"position\", \"requirement\", \"deadline\", \"closing date\", \"salary\", \"apply\",\n    \"cv\", \"hiring\", \"job description\", \"responsibilities\", \"qualification\"\n  ];\n  let score = 0;\n  for (let hallmark of jobHallmarks) {\n    if (lowerText.includes(hallmark)) score++;\n  }\n  if (score < 1) continue;\n\n  let lines = rawText.split('\\n').map(l => l.trim()).filter(l => l.length > 0);\n  let title = stripEmoji(lines[0] || \"\");\n  title = title.replace(/^[-•📣🔥🔔✨\\s]+/, '').trim();\n\n  let organisation = \"N/A\";\n  const orgMatch = rawText.match(/(?:industry|company type|client sector|client|employer)\\s*:\\s*([^\\n]+)/i) ||\n                   rawText.match(/([^\\n,.:]+(?:co\\.,\\s*ltd|plc|group|trading|solutions|hospital|school|bank))/i);\n  if (orgMatch) {\n    organisation = orgMatch[1].trim();\n  }\n\n  organisation = stripEmoji(organisation).replace(/^[:\\s-]+|[:\\s-]+$/g, '').trim();\n  if (!organisation) organisation = \"N/A\";\n\n  const location = \"Cambodia\";\n  const linkMatch = blockHtml.match(/href=\"([^\"]+?MyWorldCareersCambodia\\/\\d+)\"/);\n  const url = linkMatch ? linkMatch[1] : \"https://t.me/s/MyWorldCareersCambodia\";\n\n  const cleanTitle = sanitize(title);\n  const cleanOrg = sanitize(organisation) || \"N/A\";\n  const cleanDesc = sanitize(rawText);\n\n  results.push({\n    json: {\n      source: \"MyWorldCareers\",\n      id: extractId(url),\n      title: cleanTitle,\n      organisation: cleanOrg,\n      location: location,\n      link: url,\n      description: cleanDesc,\n      raw_title: cleanTitle,\n      raw_company: cleanOrg,\n      raw_location: location,\n      raw_description: cleanDesc,\n      source_url: url\n    }\n  });\n}\n\nreturn results.slice(0, 15);"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        608,
+        -48
+      ],
+      "id": "25669633-7015-4eb8-a60d-654246de42d5",
+      "name": "MyWorld Careers Cambodia Code"
+    },
+    {
+      "parameters": {
+        "url": "https://khmergigs.misty-river-049a.workers.dev/?url=https://t.me/s/hrincjobs",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "text"
+            }
+          }
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        320,
+        128
+      ],
+      "id": "25dcbb05-c36c-4d92-a18a-7349ac163a9b",
+      "name": "HRINC Jobs"
+    },
+    {
+      "parameters": {
+        "jsCode": "// ============================================================\n// SCRAPER: HRINC (Telegram Channel)\n// Output: standardized schema for downstream pipeline\n// Normalize Job Data -> Dedupe -> OpenRouter AI -> Google Sheets\n// ============================================================\n\nconst html = $input.first()?.json?.data || \"\";\nconst blockRegex = /<div class=\"tgme_widget_message_wrap[^>]*>([\\s\\S]*?)<\\/div>\\s*<\\/div>\\s*<\\/div>/g;\n\nfunction sanitize(text) {\n  if (!text) return \"\";\n  let t = String(text);\n  t = t.replace(/<[^>]*>?/g, \" \");\n  const entities = {\n    \"&nbsp;\": \" \", \"&amp;\": \"&\", \"&lt;\": \"<\", \"&gt;\": \">\", \"&quot;\": '\"',\n    \"&#39;\": \"'\", \"&apos;\": \"'\", \"&#33;\": \"!\", \"&rsquo;\": \"'\", \"&lsquo;\": \"'\",\n    \"&rdquo;\": '\"', \"&ldquo;\": '\"', \"&ndash;\": \"-\", \"&mdash;\": \"-\"\n  };\n  t = t.replace(/&nbsp;|&amp;|&lt;|&gt;|&quot;|&#39;|&apos;|&#33;|&rsquo;|&lsquo;|&rdquo;|&ldquo;|&ndash;|&mdash;/g, m => entities[m]);\n  t = t.replace(/&#(\\d+);/g, (_, dec) => String.fromCharCode(dec));\n  t = t.replace(/[*_#`\\[\\]]/g, \"\");\n  t = t.replace(/\\s+/g, \" \").trim();\n  return t;\n}\n\nfunction stripEmoji(text) {\n  return String(text || \"\")\n    .replace(/[\\uE000-\\uF8FF]|\\uD83C[\\uDC00-\\uDFFF]|\\uD83D[\\uDC00-\\uDFFF]|[\\u2011-\\u26FF]|\\uD83E[\\uDD00-\\uDFFF]/g, \"\")\n    .trim();\n}\n\nfunction extractId(url) {\n  if (!url) return \"\";\n  const match = String(url).match(/(\\d+)/);\n  return match ? match[1] : \"\";\n}\n\nlet match;\nlet results = [];\n\nwhile ((match = blockRegex.exec(html)) !== null) {\n  const blockHtml = match[1];\n  const textMatch = blockHtml.match(/<div class=\"tgme_widget_message_text[^>]*>([\\s\\S]*?)<\\/div>/);\n  if (!textMatch) continue;\n\n  let rawText = textMatch[1]\n    .replace(/<br\\s*\\/?>/gi, \"\\n\")\n    .replace(/<\\/?[^>]+>/g, \"\")\n    .replace(/&amp;/g, \"&\")\n    .replace(/&quot;/g, '\"')\n    .replace(/&#39;/g, \"'\")\n    .replace(/&#33;/g, \"!\")\n    .trim();\n\n  if (rawText.length < 20) continue;\n\n  const lower = rawText.toLowerCase();\n  const hallmarks = [\n    \"position\", \"vacancy\", \"vacancies\", \"hiring\", \"apply\", \"deadline\",\n    \"requirement\", \"qualification\", \"experience\", \"salary\", \"cv\", \"join our team\",\n    \"ជ្រើសរើស\", \"ត្រូវការ\", \"ប្រាក់ខែ\", \"លក្ខខណ្ឌ\"\n  ];\n  let score = 0;\n  for (const word of hallmarks) {\n    if (lower.includes(word)) score++;\n  }\n  if (score < 1) continue;\n\n  let lines = rawText.split('\\n').map(l => l.trim()).filter(l => l.length > 0);\n  let title = stripEmoji(lines[0] || \"\");\n\n  let organisation = \"N/A\";\n  const orgMatch =\n      rawText.match(/(?:company|organization|employer|client|ក្រុមហ៊ុន)\\s*:?\\s*([^\\n]+)/i) ||\n      rawText.match(/([^\\n]+(?:Co\\.,?\\s*Ltd|Ltd|PLC|Group))/i);\n  if (orgMatch) {\n      organisation = orgMatch[1].trim();\n  }\n\n  organisation = stripEmoji(organisation).replace(/^[:\\s-]+|[:\\s-]+$/g, '').trim();\n  if (!organisation) organisation = \"N/A\";\n\n  const location = \"Cambodia\";\n  const linkMatch = blockHtml.match(/href=\"([^\"]+?\\/\\d+)\"/);\n  const url = linkMatch ? linkMatch[1] : \"https://t.me/s/hrincjobs\";\n\n  const cleanTitle = sanitize(title);\n  const cleanOrg = sanitize(organisation) || \"N/A\";\n  const cleanDesc = sanitize(rawText);\n\n  results.push({\n    json: {\n      source: \"HRINC\",\n      id: extractId(url),\n      title: cleanTitle,\n      organisation: cleanOrg,\n      location: location,\n      link: url,\n      description: cleanDesc,\n      raw_title: cleanTitle,\n      raw_company: cleanOrg,\n      raw_location: location,\n      raw_description: cleanDesc,\n      source_url: url\n    }\n  });\n}\n\nreturn results.slice(0, 15);"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        608,
+        128
+      ],
+      "id": "8d70eded-c03c-4fcc-be71-c2d757512f75",
+      "name": "HRINC Jobs Code"
+    },
+    {
+      "parameters": {
+        "url": "=https://www.khmer24.com/en/c-jobs",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "text"
+            }
+          }
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        320,
+        288
+      ],
+      "id": "8c89469d-4ca9-48de-8574-a71882bf1bf1",
+      "name": "Khmer24"
+    },
+    {
+      "parameters": {
+        "jsCode": "// ============================================================\n// SCRAPER: Khmer24\n// Output: standardized schema for downstream pipeline\n// Normalize Job Data -> Dedupe -> OpenRouter AI -> Google Sheets\n// ============================================================\n\nconst html = $input.first()?.json?.data || \"\";\nconst jobLinkRegex = /<a[^>]+href=\"(\\/en\\/[^\"]+-adid-(\\d+))\"[^>]*>([\\s\\S]*?)<\\/a>/g;\n\nfunction sanitize(text) {\n  if (!text) return \"\";\n  let t = String(text);\n  t = t.replace(/<[^>]*>?/g, \" \");\n  const entities = {\n    \"&nbsp;\": \" \", \"&amp;\": \"&\", \"&lt;\": \"<\", \"&gt;\": \">\", \"&quot;\": '\"',\n    \"&#39;\": \"'\", \"&apos;\": \"'\", \"&rsquo;\": \"'\", \"&lsquo;\": \"'\",\n    \"&rdquo;\": '\"', \"&ldquo;\": '\"', \"&ndash;\": \"-\", \"&mdash;\": \"-\"\n  };\n  t = t.replace(/&nbsp;|&amp;|&lt;|&gt;|&quot;|&#39;|&apos;|&rsquo;|&lsquo;|&rdquo;|&ldquo;|&ndash;|&mdash;/g, m => entities[m]);\n  t = t.replace(/&#(\\d+);/g, (_, dec) => String.fromCharCode(dec));\n  t = t.replace(/[*_#`\\[\\]]/g, \"\");\n  t = t.replace(/\\s+/g, \" \").trim();\n  return t;\n}\n\nconst junkPhrases = [\n  \"post your job here\",\n  \"are you sure\",\n  \"unsaved this post\",\n  \"highlight ads\",\n  \"want to see your ads\"\n];\n\nlet match;\nlet seenIds = new Set();\nlet results = [];\n\nwhile ((match = jobLinkRegex.exec(html)) !== null) {\n  const relativeUrl = match[1];\n  const adId = match[2];\n  let innerHtml = match[3];\n\n  if (seenIds.has(adId)) continue;\n\n  let rawText = innerHtml\n    .replace(/<\\/?[^>]+(>|$)/g, \" \")\n    .replace(/&amp;/g, \"&\")\n    .replace(/&quot;/g, '\"')\n    .replace(/&#39;/g, \"'\")\n    .replace(/\\s+/g, \" \")\n    .trim();\n\n  if (rawText.length < 3) continue;\n\n  const lowerRaw = rawText.toLowerCase();\n  if (junkPhrases.some(p => lowerRaw.includes(p))) continue;\n\n  seenIds.add(adId);\n\n  let title = rawText.split(/\\s(?:\\d+[hd]|Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\\s/)[0].trim();\n  const half = Math.floor(title.length / 2);\n  if (title.slice(0, half).trim() === title.slice(half).trim()) {\n    title = title.slice(0, half).trim();\n  }\n\n  title = sanitize(title);\n  if (!title || title.length < 2) continue;\n\n  const location = \"Cambodia\";\n  const organisation = \"N/A\";\n  const url = `https://www.khmer24.com${relativeUrl}`;\n  const cleanDesc = sanitize(rawText);\n\n  results.push({\n    json: {\n      source: \"Khmer24\",\n      id: adId,\n      title: title,\n      organisation: organisation,\n      location: location,\n      link: url,\n      description: cleanDesc,\n      raw_title: title,\n      raw_company: organisation,\n      raw_location: location,\n      raw_description: cleanDesc,\n      source_url: url\n    }\n  });\n}\n\nreturn results.slice(0, 15);"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        608,
+        288
+      ],
+      "id": "6b860ebc-138e-4cf5-b750-b5a14aa1a3e6",
+      "name": "Khmer24 Code"
+    },
+    {
+      "parameters": {
+        "url": "https://www.jobnet.com.kh/jobs-in-cambodia",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "text"
+            }
+          }
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        320,
+        448
+      ],
+      "id": "f89bda15-08a4-4b3c-af1c-7b55646df5af",
+      "name": "JobNet"
+    },
+    {
+      "parameters": {
+        "jsCode": "// ============================================================\n// SCRAPER: JobNet\n// Output: standardized schema for downstream pipeline\n// Normalize Job Data -> Dedupe -> OpenRouter AI -> Google Sheets\n// ============================================================\n\nconst html = $input.first()?.json?.data || \"\";\nconst jobLinkRegex = /<a[^>]+href=\"(\\/job\\/[^\"]+\\/(\\d+))\"[^>]*>([\\s\\S]*?)<\\/a>/g;\n\nfunction sanitize(text) {\n  if (!text) return \"\";\n  let t = String(text);\n  t = t.replace(/<[^>]*>?/g, \" \");\n  const entities = {\n    \"&nbsp;\": \" \", \"&amp;\": \"&\", \"&lt;\": \"<\", \"&gt;\": \">\", \"&quot;\": '\"',\n    \"&#39;\": \"'\", \"&apos;\": \"'\", \"&rsquo;\": \"'\", \"&lsquo;\": \"'\",\n    \"&rdquo;\": '\"', \"&ldquo;\": '\"', \"&ndash;\": \"-\", \"&mdash;\": \"-\"\n  };\n  t = t.replace(/&nbsp;|&amp;|&lt;|&gt;|&quot;|&#39;|&apos;|&rsquo;|&lsquo;|&rdquo;|&ldquo;|&ndash;|&mdash;/g, m => entities[m]);\n  t = t.replace(/&#(\\d+);/g, (_, dec) => String.fromCharCode(dec));\n  t = t.replace(/[*_#`\\[\\]]/g, \"\");\n  t = t.replace(/\\s+/g, \" \").trim();\n  return t;\n}\n\nlet match;\nlet seenIds = new Set();\nlet results = [];\n\nwhile ((match = jobLinkRegex.exec(html)) !== null) {\n  const relativeUrl = match[1];\n  const jobId = match[2];\n  let innerHtml = match[3];\n\n  if (seenIds.has(jobId)) continue;\n\n  let rawText = innerHtml\n    .replace(/<\\/?[^>]+(>|$)/g, \" \")\n    .replace(/&amp;/g, \"&\")\n    .replace(/&quot;/g, '\"')\n    .replace(/&#39;/g, \"'\")\n    .replace(/\\s+/g, \" \")\n    .trim();\n\n  if (rawText.length < 2) continue;\n\n  seenIds.add(jobId);\n\n  let title = sanitize(rawText);\n  if (!title) continue;\n\n  const url = `https://www.jobnet.com.kh${relativeUrl}`;\n  const searchWindow = html.substring(match.index, match.index + 2500);\n\n  let organisation = \"N/A\";\n  const orgMatch = searchWindow.match(/<a[^>]+href=\"\\/job\\/[^\"]+\"[^>]*>\\s*([^<]{3,60})\\s*<\\/a>\\s*\"/) ||\n                   searchWindow.match(/\\]\\(https:\\/\\/www\\.jobnet\\.com\\.kh\\/job\\/[^)]+\\)\\s*\\n*\\s*\\[([^\\]]{3,60})\\]/);\n  if (orgMatch) organisation = sanitize(orgMatch[1]) || \"N/A\";\n\n  const location = \"Cambodia\";\n  const cleanDesc = sanitize(searchWindow);\n\n  results.push({\n    json: {\n      source: \"JobNet\",\n      id: jobId,\n      title: title,\n      organisation: organisation,\n      location: location,\n      link: url,\n      description: cleanDesc,\n      raw_title: title,\n      raw_company: organisation,\n      raw_location: location,\n      raw_description: cleanDesc,\n      source_url: url\n    }\n  });\n}\n\nreturn results.slice(0, 15);"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        608,
+        448
+      ],
+      "id": "9a549f34-25fa-49c3-9f78-0723b6b9bd0f",
+      "name": "JobNet Code"
+    },
+    {
+      "parameters": {
+        "url": "https://t.me/s/Cambodia_jobs_New",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "text"
+            }
+          }
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        320,
+        592
+      ],
+      "id": "899fff99-6486-4934-b547-2cf9d86976e2",
+      "name": "JobCambodiaNew"
+    },
+    {
+      "parameters": {
+        "jsCode": "// ============================================================\n// SCRAPER: JobCambodiaNew (Telegram Channel)\n// Output: standardized schema for downstream pipeline\n// Normalize Job Data -> Dedupe -> OpenRouter AI -> Google Sheets\n// ============================================================\n\nconst html = $input.first()?.json?.data || \"\";\nconst blockRegex = /<div class=\"tgme_widget_message_wrap[^>]*>([\\s\\S]*?)<\\/div>\\s*<\\/div>\\s*<\\/div>/g;\n\nfunction sanitize(text) {\n  if (!text) return \"\";\n  let t = String(text);\n  t = t.replace(/<[^>]*>?/g, \" \");\n  const entities = {\n    \"&nbsp;\": \" \", \"&amp;\": \"&\", \"&lt;\": \"<\", \"&gt;\": \">\", \"&quot;\": '\"',\n    \"&#39;\": \"'\", \"&apos;\": \"'\", \"&#33;\": \"!\", \"&rsquo;\": \"'\", \"&lsquo;\": \"'\",\n    \"&rdquo;\": '\"', \"&ldquo;\": '\"', \"&ndash;\": \"-\", \"&mdash;\": \"-\"\n  };\n  t = t.replace(/&nbsp;|&amp;|&lt;|&gt;|&quot;|&#39;|&apos;|&#33;|&rsquo;|&lsquo;|&rdquo;|&ldquo;|&ndash;|&mdash;/g, m => entities[m]);\n  t = t.replace(/&#(\\d+);/g, (_, dec) => String.fromCharCode(dec));\n  t = t.replace(/[*_#`\\[\\]]/g, \"\");\n  t = t.replace(/\\s+/g, \" \").trim();\n  return t;\n}\n\nfunction stripEmoji(text) {\n  return String(text || \"\")\n    .replace(/[\\uE000-\\uF8FF]|\\uD83C[\\uDC00-\\uDFFF]|\\uD83D[\\uDC00-\\uDFFF]|[\\u2011-\\u26FF]|\\uD83E[\\uDD00-\\uDFFF]/g, \"\")\n    .trim();\n}\n\nfunction extractId(url) {\n  if (!url) return \"\";\n  const match = String(url).match(/(\\d+)/);\n  return match ? match[1] : \"\";\n}\n\nlet match;\nlet results = [];\n\nwhile ((match = blockRegex.exec(html)) !== null) {\n  const blockHtml = match[1];\n  const textMatch = blockHtml.match(/<div class=\"tgme_widget_message_text[^>]*>([\\s\\S]*?)<\\/div>/);\n  if (!textMatch) continue;\n\n  let rawText = textMatch[1]\n    .replace(/<br\\s*\\/?>/gi, '\\n')\n    .replace(/<\\/?[^>]+(>|$)/g, \"\")\n    .replace(/&amp;/g, \"&\")\n    .replace(/&quot;/g, '\"')\n    .replace(/&#33;/g, \"!\")\n    .replace(/&#39;/g, \"'\")\n    .trim();\n\n  if (rawText.length < 20 || rawText.toLowerCase().includes(\"welcome to\")) continue;\n\n  const lowerText = rawText.toLowerCase();\n  const jobHallmarks = [\n    \"position\", \"requirement\", \"deadline\", \"closing date\", \"salary\", \"apply\",\n    \"cv\", \"hiring\", \"vacant\", \"post\", \"ជ្រើសរើស\", \"ត្រូវការ\", \"តួនាទី\", \"ប្រាក់ខែ\", \"លក្ខខណ្ឌ\"\n  ];\n  let score = 0;\n  for (let hallmark of jobHallmarks) {\n    if (lowerText.includes(hallmark)) score++;\n  }\n  if (score < 1) continue;\n\n  let lines = rawText.split('\\n').map(l => l.trim()).filter(l => l.length > 0);\n  let title = stripEmoji(lines[0] || \"\");\n  title = title.replace(/^[-•\\s]+/, '').trim();\n\n  let organisation = \"N/A\";\n  const orgMatch = rawText.match(/^([^\\n]+?)\\s+(?:is looking for|is urgently|is hiring|group is)/i) ||\n                   rawText.match(/(?:company|organization|ក្រុមហ៊ុន|employer)\\s*:\\s*([^\\n]+)/i) ||\n                   rawText.match(/([^\\n,.:]+(?:co\\.,\\s*ltd|plc|group|trading|solutions|investment))/i);\n  if (orgMatch) {\n    organisation = orgMatch[1].trim();\n  }\n\n  organisation = stripEmoji(organisation).replace(/^[:\\s-]+|[:\\s-]+$/g, '').trim();\n  if (!organisation) organisation = \"N/A\";\n\n  const location = \"Cambodia\";\n  const linkMatch = blockHtml.match(/href=\"([^\"]+?Cambodia_jobs_New\\/\\d+)\"/);\n  const url = linkMatch ? linkMatch[1] : \"https://t.me/s/Cambodia_jobs_New\";\n\n  const cleanTitle = sanitize(title);\n  const cleanOrg = sanitize(organisation) || \"N/A\";\n  const cleanDesc = sanitize(rawText);\n\n  results.push({\n    json: {\n      source: \"JobCambodiaNew\",\n      id: extractId(url),\n      title: cleanTitle,\n      organisation: cleanOrg,\n      location: location,\n      link: url,\n      description: cleanDesc,\n      raw_title: cleanTitle,\n      raw_company: cleanOrg,\n      raw_location: location,\n      raw_description: cleanDesc,\n      source_url: url\n    }\n  });\n}\n\nreturn results.slice(0, 15);"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        608,
+        592
+      ],
+      "id": "69e53022-06d3-4340-9d5b-3fc5d3f79c5d",
+      "name": "JobCambodiaNew Code"
+    },
+    {
+      "parameters": {
+        "url": "https://opendevelopmentcambodia.net/about/jobs/",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "text"
+            }
+          }
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        336,
+        768
+      ],
+      "id": "6602c178-eef8-4af1-b55f-adcf333cd1ff",
+      "name": "ODC"
+    },
+    {
+      "parameters": {
+        "jsCode": "// ============================================================\n// SCRAPER: ODC (Open Development Cambodia)\n// Output: standardized schema for downstream pipeline\n// Normalize Job Data -> Dedupe -> OpenRouter AI -> Google Sheets\n// ============================================================\n\nconst html = $input.first()?.json?.data || \"\";\n\nfunction sanitize(text) {\n  if (!text) return \"\";\n  let t = String(text);\n  t = t.replace(/<[^>]*>?/g, \" \");\n  const entities = {\n    \"&nbsp;\": \" \", \"&amp;\": \"&\", \"&lt;\": \"<\", \"&gt;\": \">\", \"&quot;\": '\"',\n    \"&#39;\": \"'\", \"&apos;\": \"'\", \"&#8217;\": \"'\", \"&rsquo;\": \"'\", \"&lsquo;\": \"'\",\n    \"&rdquo;\": '\"', \"&ldquo;\": '\"', \"&ndash;\": \"-\", \"&mdash;\": \"-\"\n  };\n  t = t.replace(/&nbsp;|&amp;|&lt;|&gt;|&quot;|&#39;|&apos;|&#8217;|&rsquo;|&lsquo;|&rdquo;|&ldquo;|&ndash;|&mdash;/g, m => entities[m]);\n  t = t.replace(/&#(\\d+);/g, (_, dec) => String.fromCharCode(dec));\n  t = t.replace(/[*_#`\\[\\]]/g, \"\");\n  t = t.replace(/\\s+/g, \" \").trim();\n  return t;\n}\n\nconst jobBlockRegex = /<h3[^>]*>([\\s\\S]*?)<\\/h3>([\\s\\S]*?)(?=<h3|$)/g;\nconst JOBS_URL = \"https://opendevelopmentcambodia.net/about/jobs/\";\n\nlet match;\nlet results = [];\n\nwhile ((match = jobBlockRegex.exec(html)) !== null) {\n  let rawTitle = match[1].replace(/<\\/?[^>]+(>|$)/g, \"\").trim();\n  let bodyHtml = match[2];\n\n  let title = sanitize(rawTitle);\n  if (!title || title.length < 3) continue;\n\n  let bodyText = bodyHtml\n    .replace(/<br\\s*\\/?>/gi, \"\\n\")\n    .replace(/<\\/?[^>]+(>|$)/g, \" \")\n    .replace(/&amp;/g, \"&\")\n    .replace(/&#8217;/g, \"'\")\n    .replace(/\\s+/g, \" \")\n    .trim();\n\n  const lowerBody = bodyText.toLowerCase();\n  if (!lowerBody.includes(\"position\") && !lowerBody.includes(\"deadline\") && !lowerBody.includes(\"responsibilities\")) continue;\n\n  let location = \"Cambodia\";\n  const locMatch = bodyText.match(/Schedule\\s*&?\\s*Location\\s*([^|]+?)(?:Timeframe|Job Summary|$)/i);\n  if (locMatch) {\n    const locText = sanitize(locMatch[1]);\n    if (locText.length > 3 && locText.length < 60) location = locText;\n  }\n\n  const cleanOrg = \"Open Development Cambodia (ODC)\";\n  const cleanDesc = sanitize(bodyText);\n\n  results.push({\n    json: {\n      source: \"ODC\",\n      id: \"\",\n      title: title,\n      organisation: cleanOrg,\n      location: location,\n      link: JOBS_URL,\n      description: cleanDesc,\n      raw_title: title,\n      raw_company: cleanOrg,\n      raw_location: location,\n      raw_description: cleanDesc,\n      source_url: JOBS_URL\n    }\n  });\n}\n\nreturn results.slice(0, 15);"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        608,
+        768
+      ],
+      "id": "57e04052-661d-4d8d-9a4c-1e4e5fe036d1",
+      "name": "ODC Code"
+    },
+    {
+      "parameters": {
+        "jsCode": "const allInputs = $input.all();\nconst outputJobs = [];\n\nconst clean = (str) =>\n  typeof str === 'string'\n    ? str.replace(/<[^>]*>?/gm, '').replace(/\\s+/g, ' ').trim()\n    : '';\n\nfor (const item of allInputs) {\n  const d = item.json || {};\n\n  // 1. ReliefWeb Nested API Payload\n  if (Array.isArray(d.data)) {\n    for (const job of d.data) {\n      const fields = job.fields || {};\n\n      const url = clean(\n        fields.url ||\n        (job.id ? `https://reliefweb.int/node/${job.id}` : '')\n      );\n\n     outputJobs.push({\n  json: {\n    source: 'ReliefWeb',\n    link: url,\n    title: clean(fields.title),\n    company: clean(\n      fields.source && fields.source[0]\n        ? fields.source[0].name\n        : 'N/A'\n    ),\n    location: clean(\n      fields.country && fields.country[0]\n        ? fields.country[0].name\n        : 'Cambodia'\n    ),\n    description: clean(\n      fields.body || fields.body_html || ''\n    ),\n    fetched_at: new Date().toISOString()\n  }\n});\n    }\n  }\n\n  // 2. Direct Scraped Items\n  else if (\n    d.link ||\n    d.url ||\n    d.source_url ||\n    d.title ||\n    d.raw_title\n  ) {\n    const url = clean(\n      d.link || d.url || d.source_url\n    );\n\n    outputJobs.push({\n      json: {\n        source: clean(d.source || d.source_id) || 'Scraped Source',\n        link: url,\n        title: clean(d.title || d.job_title || d.raw_title),\n        company: clean(\n          d.company ||\n          d.organisation ||\n          d.raw_company\n        ) || 'N/A',\n        location: clean(\n          d.location ||\n          d.raw_location\n        ) || 'Cambodia',\n        description: clean(\n          d.description ||\n          d.job_description ||\n          d.raw_description ||\n          d.body ||\n          d.body_html ||\n          ''\n        ),\n        fetched_at: new Date().toISOString()\n      }\n    });\n  }\n}\n\nreturn outputJobs;"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1728,
+        368
+      ],
+      "id": "8c3dcc06-c7be-4d7a-8632-703d36a853c1",
+      "name": "Normalize Job Data"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "807bd72b-8c69-4ee5-9e11-ee5a3fc041f4",
+              "leftValue": "={{ $json.raw_title || $json.title }}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "notEmpty",
+                "singleValue": true
+              }
+            },
+            {
+              "id": "472e095b-5978-4d20-a011-b8ca3e8dc5e7",
+              "leftValue": "={{ $json.raw_company || $json.company }}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "notEmpty",
+                "singleValue": true
+              }
+            },
+            {
+              "id": "2a3b3046-3d8e-47bf-ac42-54d52744948f",
+              "leftValue": "={{ $json.source_url || $json.link }}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "notEmpty",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        2032,
+        368
+      ],
+      "id": "48655cea-9b14-4694-88c0-9aeecb825389",
+      "name": "Validate Job"
+    },
+    {
+      "parameters": {
+        "jsCode": "const crypto = require('crypto');\n\nconst job = $json;\n\nconst normalize = (value) =>\n  String(value ?? '')\n    .trim()\n    .toLowerCase()\n    .replace(/\\s+/g, ' ');\n\nconst dedupeKey = [\n  normalize(job.source),\n  normalize(job.link),\n  normalize(job.title),\n  normalize(job.company),\n  normalize(job.location),\n].join('|');\n\nconst dedupe_hash = crypto\n  .createHash('sha256')\n  .update(dedupeKey)\n  .digest('hex');\n\nreturn {\n  json: {\n    ...job,\n    dedupe_hash,\n  },\n};"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2336,
+        320
+      ],
+      "id": "aea84dc3-622f-48f6-bb25-acf8bfb41aa3",
+      "name": "Generate Dedupe Hash"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "a7bd3f03-6807-4076-b7fe-b6392b10302c",
+              "leftValue": "={{ $json.is_valid_job }}",
+              "rightValue": "Is True",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            },
+            {
+              "id": "9e2d1183-8054-4f3f-9452-8de95d5ea70d",
+              "leftValue": "={{ $json.is_duplicate }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "false",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "looseTypeValidation": true,
+        "options": {
+          "ignoreCase": false
+        }
+      },
+      "type": "n8n-nodes-base.filter",
+      "typeVersion": 2.3,
+      "position": [
+        4688,
+        336
+      ],
+      "id": "243fc4d1-d616-4d07-b187-d05aa21224e6",
+      "name": "Filter",
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {
+        "operation": "appendOrUpdate",
+        "documentId": {
+          "__rl": true,
+          "value": "1KAC6xYbcKG4X3i_XXnSc3uIhqhbyaH1fOLCiIF3CXT0",
+          "mode": "list",
+          "cachedResultName": "KG — Job Monitor",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1KAC6xYbcKG4X3i_XXnSc3uIhqhbyaH1fOLCiIF3CXT0/edit?usp=drivesdk"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "gid=0",
+          "mode": "list",
+          "cachedResultName": "Sheet1",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1KAC6xYbcKG4X3i_XXnSc3uIhqhbyaH1fOLCiIF3CXT0/edit#gid=0"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "Job Title": "={{$json.title}}",
+            "Organisation": "={{$json.company}}",
+            "Location": "={{$json.location}}",
+            "Closing Date": "={{$json.closing_date}}",
+            "Link": "={{ $json.link }}",
+            "Sector": "={{$json.sector}}",
+            "Job Type": "={{$json.job_type}}",
+            "Source": "={{$json.source}}",
+            "Date Fetched": "={{$json.first_seen_at || $json.fetched_at}}",
+            "Sent to Channel": "=No",
+            "Seniority": "={{$json.seniority}}",
+            "Language Required ": "={{ Array.isArray($json.language) ? $json.language.join(', ') : $json.language }}",
+            "Skills Keywords": "={{ Array.isArray($json.skills) ? $json.skills.join(', ') : $json.skills }}",
+            "Duplicate Flag": "={{$json.is_duplicate}}",
+            "Salary": "={{$json.salary || \"\"}}",
+            "Dedupe Hash": "={{$json.dedupe_hash}}"
+          },
+          "matchingColumns": [
+            "Link"
+          ],
+          "schema": [
+            {
+              "id": "Job Title",
+              "displayName": "Job Title",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Organisation",
+              "displayName": "Organisation",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Salary",
+              "displayName": "Salary",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Location",
+              "displayName": "Location",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Closing Date",
+              "displayName": "Closing Date",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Link",
+              "displayName": "Link",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Source",
+              "displayName": "Source",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Sector",
+              "displayName": "Sector",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Date Fetched",
+              "displayName": "Date Fetched",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Sent to Channel",
+              "displayName": "Sent to Channel",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Job Type",
+              "displayName": "Job Type",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Seniority",
+              "displayName": "Seniority",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Skills Keywords",
+              "displayName": "Skills Keywords",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Language Required ",
+              "displayName": "Language Required ",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Duplicate Flag",
+              "displayName": "Duplicate Flag",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Dedupe Hash",
+              "displayName": "Dedupe Hash",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {
+          "useAppend": false
+        }
+      },
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        5184,
+        336
+      ],
+      "id": "36c338f2-7e85-458f-ba7f-c159c8681413",
+      "name": "Append or update row in sheet",
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "kI0QwkalfmJ0jFK9",
+          "name": "Google Sheets account 2"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "function formatToPhnomPenh(isoString) {\n  if (!isoString) return null;\n  const date = new Date(isoString);\n  if (isNaN(date.getTime())) return null;\n  const phnomPenhTime = new Date(date.getTime() + 7 * 60 * 60 * 1000);\n  return phnomPenhTime.toISOString().replace('Z', '+07:00');\n}\n\nfunction isJobActive(fetchedAt, closingDate) {\n  const now = new Date();\n  if (closingDate) {\n    const closing = new Date(closingDate);\n    if (!isNaN(closing.getTime())) {\n      return closing >= now;\n    }\n  }\n  if (fetchedAt) {\n    const fetched = new Date(fetchedAt);\n    if (!isNaN(fetched.getTime())) {\n      const daysSinceFetched = (now - fetched) / (1000 * 60 * 60 * 24);\n      return daysSinceFetched <= 90;\n    }\n  }\n  return true;\n}\n\nconst items = $input.all();\nreturn items.map(item => {\n  const job = item.json || {};\n\n  let jobType = job.job_type;\n  if (!jobType || jobType === '') {\n    jobType = 'Unknown';\n  }\n\n  let seniority = job.seniority;\n  if (!seniority || seniority === '') {\n    seniority = 'Unknown';\n  }\n\n  const skills = Array.isArray(job.skills) ? job.skills : [];\n  const language = Array.isArray(job.language) ? job.language : [];\n  const fetchedAtFormatted = formatToPhnomPenh(job.fetched_at) || formatToPhnomPenh(new Date().toISOString());\n\n  return {\n    json: {\n      source: job.source || 'Unknown',\n      id: job.id || '',\n      title: job.title || 'Unknown',\n      company: job.company || 'Unknown',\n      location: job.location || 'Unknown',\n      closing_date: job.closing_date || null,\n      link: job.link || '',\n      sector: job.sector || 'Unknown',\n      salary: job.salary || null,\n      job_type: jobType,\n      seniority: seniority,\n      skills: skills,\n      language: language,\n      description: job.description || '',\n      is_valid_job: job.is_valid_job !== undefined ? Boolean(job.is_valid_job) : true,\n      is_duplicate: job.is_duplicate !== undefined ? Boolean(job.is_duplicate) : false,\n      fetched_at: fetchedAtFormatted,\n      dedupe_hash: job.dedupe_hash || '',\n      is_active: isJobActive(job.fetched_at, job.closing_date)\n    }\n  };\n});"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        4480,
+        336
+      ],
+      "id": "282f426e-0643-4c40-a5db-3a5c4255dc88",
+      "name": "Code in JavaScript"
+    },
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "hours",
+              "hoursInterval": 2
+            }
+          ]
+        }
+      },
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.3,
+      "position": [
+        -912,
+        144
+      ],
+      "id": "70eaaa15-5f24-46e6-b1ca-62c2d2e81d26",
+      "name": "Schedule Trigger"
+    },
+    {
+      "parameters": {
+        "modelId": {
+          "__rl": true,
+          "value": "gpt-4.1-mini",
+          "mode": "list",
+          "cachedResultName": "GPT-4.1-MINI"
+        },
+        "responses": {
+          "values": [
+            {
+              "role": "system",
+              "content": "You are a job data extraction and classification assistant.\n\nYour task is to analyze the provided job listing and return structured information.\n\nIMPORTANT RULES:\n1. Only use information explicitly present in the job listing.\n2. Never invent or guess information.\n3. If a field is not available, return null.\n4. Keep the original job title, company, location, source, and link.\n5. Extract skills from the job description when clearly stated.\n6. Determine job_type and seniority only when the description provides enough evidence.\n7. For salary, return the stated salary/range if available. Otherwise return null.\n8. For closing_date, return the application deadline if explicitly stated. Otherwise return null.\n9. Return ONLY the requested JSON object.\n10. Do not add explanations or markdown.\n\nClassify the job into a reasonable sector such as:\n- NGO / Humanitarian\n- Development\n- Government\n- Education\n- Health\n- Finance\n- Technology\n- Engineering\n- Marketing\n- Administration\n- Human Resources\n- Legal\n- Research\n- Other\n\nFor seniority, use one of:\n- Internship\n- Entry Level\n- Junior\n- Mid Level\n- Senior\n- Manager\n- Director\n- Executive\n- Other\n- null\n\nFor job_type, use one of:\n- Full-time\n- Part-time\n- Contract\n- Consultancy\n- Internship\n- Temporary\n- Volunteer\n-Remote\n-Freelance\n- Other...\n- null\n5. LANGUAGE: All output field values (title, company, location, sector, skills, etc.) MUST be written in English, regardless of the language of the original listing. If the source listing is in Khmer or any non-English language, translate the meaning into clear, natural English before outputting. Do not copy non-English text into any output field. Do not use stylized/decorative Unicode characters (e.g. bold Unicode letters) — normalize to plain text.\n\n6. TITLE: \"title\" must be the actual job position/role being advertised (e.g. \"Accountant\", \"Marketing Officer\", \"IT Support Specialist\") — NOT a full sentence, greeting, announcement, or intro phrase. If a post is hiring for multiple named roles, use the primary/first named role. If it announces hiring generally without naming a specific role, summarize as \"Multiple Positions – [field/sector]\" (e.g. \"Multiple Positions – Finance\"). If truly no role can be identified, use \"Unspecified Position\" rather than copying a sentence."
+            },
+            {
+              "content": "=You are a job-listing data extraction and classification system.\n\nAnalyze ONE listing and return ONLY valid JSON.\n\nDo not explain your answer.\nDo not use Markdown.\nDo not use code fences.\nDo not add text before or after the JSON.\n\n========================\nINPUT JOB\n\nSource:\n{{$json.source}}\n\nTitle:\n{{$json.title}}\n\nCompany / Organisation:\n{{$json.company}}\n\nLocation:\n{{$json.location}}\n\nLink:\n{{$json.link}}\n\nJob Description:\n{{$json.description}}\n\n========================\nOUTPUT\n\nReturn exactly this JSON structure and NO other fields:\n\n{\n\"title\": \"\",\n\"company\": \"\",\n\"location\": \"\",\n\"closing_date\": null,\n\"link\": \"\",\n\"source\": \"\",\n\"sector\": \"\",\n\"salary\": null,\n\"job_type\": \"Unknown\",\n\"seniority\": \"Unknown\",\n\"skills\": [],\n\"language\": [],\n\"is_valid_job\": false\n}\n\n========================\nGENERAL RULES\nExtract information ONLY from the provided input.\nNEVER invent information.\nIf information is missing:\nclosing_date = null\nsalary = null\njob_type = \"Unknown\"\nseniority = \"Unknown\"\nskills = []\nlanguage = []\nPreserve the original title unless there is an obvious formatting problem.\nPreserve the provided link and source exactly as given — do not modify these.\n\nFor company and location: if the input field (company/location) is missing, empty, generic (e.g. just \"Cambodia\" with no district/city), or clearly less specific than what is stated in the job description, EXTRACT the more specific/accurate value from the description instead and translate it to English. Only fall back to the input field if the description provides no better information.\nReturn ONLY the fields defined in the output structure.\nDo not add:\nid\ndescription\nfetched_at\nis_duplicate\nrole\nconfidence\nreasoning\nany other field\n========================\nSTEP 0 — LANGUAGE & TITLE NORMALIZATION\n\nBefore classifying anything, normalize the extracted text as follows:\n\nLANGUAGE:\n- Every output field (title, company, location, sector, skills, etc.) MUST be written in English.\n- If the source listing is written in Khmer, or mixes Khmer and English, translate the meaning into clear, natural English. Do not leave any Khmer characters in any output field.\n- Do not translate literally word-for-word if that produces awkward phrasing — translate for meaning, the way a professional recruiter would summarize the role in English.\n- Strip stylized/decorative Unicode text (e.g. \"𝗦𝘁𝗼𝗰𝗸𝗸𝗲𝗲𝗽𝗲𝗿\") and normalize it to plain readable text (e.g. \"Stockkeeper\").\n\nTITLE EXTRACTION:\n- \"title\" must represent the actual job position/role being advertised — a short job title like \"Accountant\", \"Marketing Executive\", \"IT Support Officer\", \"Stockkeeper\", \"Insurance Sales Agent\".\n- Do NOT use as the title:\n  - A generic hiring announcement or intro sentence (e.g. \"Company X is urgently looking for various positions as below\")\n  - A greeting or Facebook/Telegram-style hook (e.g. \"We're Hiring!\")\n  - An untranslated non-English phrase\n  - A sentence copied verbatim from the post body\n- If the post advertises ONE clear role, extract that role as the title (translated to English if needed).\n- If the post advertises MULTIPLE roles at once with no single primary role, use the format: \"Multiple Positions – [sector/field]\" (e.g. \"Multiple Positions – Insurance\", \"Multiple Positions – LOLC (Cambodia)\").\n- If the post is a general opportunity announcement in a specific field but names no role at all, infer a reasonable title describing the opportunity type and field (e.g. \"Job Opportunity – Insurance Sector\"), rather than copying the announcement sentence.\n- Never leave title as \"N/A\" if a job field/sector can be reasonably inferred from context. Only use \"Unspecified Position\" if there is truly no information to infer from.\n\nExamples:\n- Raw: \"ឱកាសការងារជាមួយស្ថាប័ន៖ Insurance\" → title: \"Job Opportunity – Insurance Sector\"\n- Raw: \"LOLC (CAMBODIA) PLC. (LOLC) s urgently looking for various positions as below:\" → title: \"Multiple Positions – LOLC (Cambodia)\"\n- Raw: \"We're Hiring: 𝗦𝘁𝗼𝗰𝗸𝗸𝗲𝗲𝗽𝗲𝗿!\" → title: \"Stockkeeper\"\n- Raw: \"PENGBO (CAMBODIA) CO., LTD. is seeking talented and motivated individuals to join our growing team.\" (no role named, general field unclear) → title: \"Unspecified Position\"\n========================\nSTEP 0b — LOCATION, COMPANY & SALARY EXTRACTION FROM DESCRIPTION\n\nMany listings (especially Khmer-language Telegram posts) contain the true location, organisation/sector, and salary INSIDE the description text, even when the input \"location\" or \"company\" field is generic or empty.\n\nYou MUST actively scan the full description for these Khmer/English labels and extract their values, translating to English:\n\nLOCATION:\n- Look for labels such as: \"ទីតាំង៖\", \"ទីតាំង:\", \"Location:\", \"at\", followed by a place name.\n- Extract the most specific location given (district/commune + city), not just the country.\n- Example: \"ទីតាំង៖ ទួលគោក ភ្នំពេញ\" → location: \"Toul Kork, Phnom Penh\"\n- If only a country-level location is available anywhere, use that as a fallback.\nCOMPANY / ORGANISATION:\n- Look for labels such as: \"ស្ថាប័ន៖\", \"ក្រុមហ៊ុន៖\", \"Company:\", \"Organization:\", or a company name mentioned directly in the text (e.g. in a signature, letterhead, or contact section).\n- If the post explicitly states an organisation NAME, use it exactly (translated to English if needed).\n- If the post explicitly labels only a sector/industry (e.g. \"ស្ថាប័ន៖ Insurance\") with no company name given, use that stated word as the company value (e.g. \"Insurance\") — this is still an explicit label from the text, not a guess.\n- Do NOT invent, infer, or generate a descriptive placeholder company name based on job duties, industry, or context (e.g. never output things like \"Well-Known Consulting Firm\", \"Pharmaceutical Company\", \"Leading Insurance Provider\", \"Reputable Organization\"). These are fabrications and are strictly forbidden.\n- If no company name AND no explicit sector label are stated anywhere in the text, set company to \"N/A\". Do not substitute any invented text.\n\nSALARY:\n- Look for labels such as: \"ប្រាក់ខែ៖\", \"ប្រាក់ខែ:\", \"Salary:\", \"Salary Range:\", followed by an amount or range.\n- Extract exactly as stated, converting to a clean format.\n- Example: \"ប្រាក់ខែ៖ $1200~ $2000\" → salary: \"$1200 - $2000\"\n- Do not omit salary just because it appears in Khmer — actively look for currency symbols ($, ៛, USD, KHR) anywhere in the text.\n\nApply this extraction BEFORE finalizing the output — do not simply copy the input company/location fields if better information exists in the description.\n========================\nSTEP 1 — VALID OPPORTUNITY\n\nThis is the MOST IMPORTANT classification.\n\nDetermine whether the listing represents a REAL CURRENT OPPORTUNITY that an individual can actually apply for, submit an application, submit qualifications, submit a proposal, or otherwise compete for.\n\nSet:\n\n\"is_valid_job\": true\n\nONLY when the listing represents a genuine current opportunity such as:\n\nFull-time employment\nPart-time employment\nContract work\nConsultancy assignment\nFreelance assignment\nInternship\nVolunteer opportunity\nFellowship\nScholarship\nAnother clearly defined professional opportunity for an individual\n\nSet:\n\n\"is_valid_job\": false\n\nwhen the listing does NOT currently offer a real opportunity.\n\nExamples of INVALID listings:\n\nGeneral news\nArticles\nEvents\nConferences\nTraining announcements\nEducational courses\nGeneral organisational announcements\nMarket research\nMarket assessments\nMarket surveys\nGeneral information gathering\nVendor registration\nSupplier registration\nSupplier solicitation\nProcurement notices\nTenders\nRequests for quotations\nRequests for information that only collect market information\nNotices asking organisations or individuals to provide information about their capabilities\nNotices collecting consultant profiles for future opportunities\nNotices collecting indicative prices or market rates\nNotices explicitly stating that there is no current commitment to hire\nNotices explicitly stating that there is no current commitment to procure services\nNotices explicitly stating that there is no current contract or award\nNotices whose purpose is to determine whether a future procurement will happen\n========================\nCRITICAL RFI / EOI RULE\n\nAn RFI or EOI is NOT automatically a job.\n\nThe presence of words such as:\n\nconsultant\nconsultants\nconsulting\nconsulting services\nindividual consultant\nindividual consulting services\nconsultancy\n\ndoes NOT by itself make the listing a valid job.\n\nYou MUST determine the actual PURPOSE of the RFI/EOI.\n\nThe key question is:\n\n\"Is the organisation currently offering an actual assignment, or is it only collecting information for possible future work?\"\n\nIf it is only collecting information for possible future work:\n\n\"is_valid_job\": false\n\nIf it is offering an actual assignment:\n\n\"is_valid_job\": true\n\n========================\nINVALID RFI / EOI\n\nSet:\n\n\"is_valid_job\": false\n\nwhen the RFI/EOI is primarily being used to:\n\nconduct market research\nconduct a market assessment\nconduct a market survey\nunderstand market capacity\nidentify available consultants\nidentify consulting firms\ncollect consultant profiles\ncollect information about consultant capabilities\ncollect information about supplier capabilities\nbenchmark prices or market rates\nunderstand service delivery models\ninform future sourcing\ninform future procurement\nevaluate procurement options\ndetermine whether procurement will happen\ngather information for future planning\nassess whether there is sufficient market capacity\n\nStrong indicators of an INVALID RFI include language such as:\n\n\"solely for market research\"\n\"solely for information-gathering\"\n\"market assessment\"\n\"market research\"\n\"information gathering\"\n\"does not constitute a commitment to procure\"\n\"does not constitute a commitment to award a contract\"\n\"no obligation to proceed with procurement\"\n\"no commitment to award a contract\"\n\"used to understand market capacity\"\n\"used to assess market capacity\"\n\"used to benchmark pricing\"\n\"used to benchmark market rates\"\n\"inform future sourcing decisions\"\n\"inform future procurement\"\n\"evaluate procurement options\"\n\"determine whether a competitive procurement process will be undertaken\"\n\"determine whether procurement will proceed\"\n\nIf these statements describe the PRIMARY PURPOSE of the listing, it is NOT a current job opportunity.\n\nSet:\n\n\"is_valid_job\": false\n\n========================\nIMPORTANT RFI RULE\n\nDo NOT be fooled by a detailed \"Scope of Services\".\n\nAn RFI can describe:\n\nstrategy development\nassessments\ntraining\nconsulting\ntechnical review\nmonitoring\ncoaching\nother professional services\n\nand STILL be invalid if those services are only indicative examples of possible future work.\n\nWords such as:\n\n\"may be requested\"\n\"indicative\"\n\"potential services\"\n\"future services\"\n\"future sourcing\"\n\"market assessment\"\n\"market research\"\n\nare strong evidence that the listing may NOT be an actual current assignment.\n\nA defined list of possible services does NOT by itself mean there is a current contract or job.\n\n========================\nVALID CONSULTANCY RFI / EOI\n\nAn RFI/EOI MAY be a valid consultancy opportunity ONLY if the listing clearly represents an actual assignment.\n\nFor example:\n\n\"World Vision is seeking an individual consultant to conduct a GEDSI assessment. Interested consultants must submit a CV and technical proposal by 30 September.\"\n\nThis is a real consultancy opportunity.\n\nReturn:\n\n\"is_valid_job\": true\n\nand:\n\n\"job_type\": \"Consultancy\"\n\nAnother valid example:\n\n\"Qualified consultants are invited to submit their expressions of interest for the following assignment...\"\n\nfollowed by a clearly defined assignment, submission requirements, and an actual opportunity to compete for the work.\n\nIf the listing clearly describes an actual assignment and provides a real process for individuals/consultants to compete for that assignment, it can be valid.\n\n========================\nDECISION PRIORITY\n\nWhen determining validity, follow this order:\n\nIs there an actual opportunity being offered?\nCan an individual currently apply, submit qualifications, submit a proposal, submit an expression of interest, or compete for the assignment?\nIs there a defined assignment/work to be performed?\nIs there a current hiring, contracting, consultancy, fellowship, internship, volunteer, or other opportunity?\nOr is the organisation only collecting market information for possible future work?\n\nIf it is only collecting information for possible future work:\n\n\"is_valid_job\": false\n\nIf it is a real assignment:\n\n\"is_valid_job\": true\n\nIf uncertain:\n\n\"is_valid_job\": false\n\nNEVER assume that an RFI or EOI is a job.\n\n========================\nSTEP 2 — JOB TYPE\n\nClassify the opportunity into EXACTLY ONE of:\n\nFull-Time\nPart-Time\nContract\nConsultancy\nInternship\nTemporary\nVolunteer\nFreelance\nCourse\nScholarship\nFellowship\nOther\nUnknown\n\nUse the title and description as evidence.\n\nIMPORTANT:\n\nJOB TYPE AND VALIDITY ARE RELATED BUT ARE NOT THE SAME THING.\n\nIf a listing is NOT a real current opportunity:\n\n\"is_valid_job\": false\n\nand:\n\n\"job_type\": \"Unknown\"\n\nDo NOT label a market-research RFI as Consultancy merely because the title contains \"Consulting Services\".\n\n========================\nCONSULTANCY\n\nUse:\n\n\"job_type\": \"Consultancy\"\n\nONLY when there is a genuine consulting opportunity or actual consulting assignment.\n\nExamples:\n\nConsultant\nConsulting Services\nIndividual Consultant\nIndividual Consulting Services\nConsultancy\nConsultant Services\nConsulting assignment\nConsultant requested to perform a defined assignment\n\nHowever, the word \"consultant\" or \"consulting services\" alone is NOT sufficient.\n\nIf the listing is ONLY a:\n\nmarket-research RFI\nmarket assessment\ninformation-gathering exercise\nconsultant capability survey\nfuture procurement exercise\n\nthen:\n\n\"is_valid_job\": false\n\n\"job_type\": \"Unknown\"\n\nThe phrase \"consulting services\" alone is NOT sufficient.\n\n========================\nFULL-TIME\n\nUse \"Full-Time\" only when the listing explicitly indicates:\n\nFull-time\nFull time\n\nDo NOT assume Full-Time.\n\n========================\nPART-TIME\n\nUse \"Part-Time\" only when explicitly indicated:\n\nPart-time\nPart time\n========================\nCONTRACT\n\nUse \"Contract\" when explicitly indicated:\n\nContract\nContract position\nFixed-term contract\nFixed term contract\n\nDo not confuse a consultancy with ordinary employment contract work.\n\n========================\nINTERNSHIP\n\nUse \"Internship\" when the listing explicitly indicates:\n\nIntern\nInternship\n========================\nTEMPORARY\n\nUse \"Temporary\" when explicitly indicated:\n\nTemporary\nTemporary position\n========================\nVOLUNTEER\n\nUse \"Volunteer\" when explicitly indicated:\n\nVolunteer\nVolunteering\nVolunteer position\n========================\nFREELANCE\n\nUse \"Freelance\" when explicitly indicated:\n\nFreelance\nFreelancer\nFreelance position\n========================\nCOURSE\n\nUse \"Course\" ONLY when the listing is genuinely an educational or training course.\n\nNEVER use \"Course\" because the job type is unclear.\n\n========================\nSCHOLARSHIP\n\nUse \"Scholarship\" ONLY when the listing is specifically a scholarship opportunity.\n\n========================\nFELLOWSHIP\n\nUse \"Fellowship\" ONLY when the listing is specifically a fellowship opportunity.\n\n========================\nOTHER\n\nUse \"Other\" only when:\n\nthe listing is a genuine opportunity\nbut it does not fit any of the defined job types\n========================\nUNKNOWN\n\nUse \"Unknown\" when:\n\nthe listing is a genuine opportunity\nbut there is genuinely insufficient information to determine the type\n\nAlso use:\n\n\"Unknown\"\n\nwhen the listing is NOT a genuine current job/opportunity, especially when it is:\n\na market-research RFI\na market assessment\nan information-gathering notice\na non-award procurement notice\na vendor/supplier registration notice\n\nNEVER default an unspecified opportunity to Full-Time.\n\n========================\nSTEP 3 — SENIORITY\n\nUse EXACTLY ONE of:\n\nEntry Level\nJunior\nMid Level\nSenior\nManager\nDirector\nExecutive\nUnknown\n\nUse explicit evidence from the title or description.\n\nExamples:\n\n\"Junior Officer\" → \"Junior\"\n\n\"Entry Level Assistant\" → \"Entry Level\"\n\n\"Senior Consultant\" → \"Senior\"\n\n\"Senior Officer\" → \"Senior\"\n\n\"Manager\" → \"Manager\"\n\n\"Director\" → \"Director\"\n\n\"Chief Executive Officer\" → \"Executive\"\n\n\"Officer\" → \"Unknown\"\n\n\"Consultant\" → \"Unknown\"\n\nIMPORTANT:\n\nDo NOT infer seniority from years of experience alone.\n\nFor example:\n\n\"minimum 5 years of experience\"\n\ndoes NOT automatically mean:\n\n\"Senior\"\n\nOnly classify seniority as Senior when the listing explicitly indicates seniority or the title clearly establishes it.\n\nIf there is no reliable evidence:\n\n\"seniority\": \"Unknown\"\n\n========================\nSTEP 4 — SECTOR\n\nDetermine the main sector using the organisation, title, and description.\n\nUse EXACTLY ONE of:\n\nNGO / Humanitarian\nDevelopment\nEducation\nHealthcare\nTechnology\nFinance\nGovernment\nEnvironment\nConsulting\nMarketing\nEngineering\nLegal\nResearch\nOther\nUnknown\n\nFor organisations such as World Vision where the work concerns NGO, humanitarian, or development programming, use:\n\n\"NGO / Humanitarian\"\n\nDo not invent a sector.\n\n========================\nSTEP 5 — SKILLS\n\nExtract the most important professional skills explicitly mentioned or clearly required.\n\nReturn concise skill names.\n\nPrefer approximately 5–15 useful skills.\n\nFor example:\n\n[\n\"Gender Equality\",\n\"Disability Inclusion\",\n\"Social Inclusion\",\n\"Strategy Development\",\n\"Technical Review\",\n\"Capacity Building\",\n\"Training\",\n\"Assessments and Evaluations\",\n\"Monitoring and Reporting\",\n\"Coaching and Mentoring\"\n]\n\nDo NOT:\n\nreturn sentences\ncopy the entire description\ninclude generic filler words\ninvent skills\n\nOnly extract skills supported by the listing.\n\nIMPORTANT:\n\nEven if \"is_valid_job\" is false, you may still extract skills if the listing clearly describes the professional skills involved.\n\n========================\nSTEP 6 — LANGUAGE\n\nExtract languages ONLY when the listing explicitly mentions them as required, preferred, or relevant.\n\nExample:\n\n[\n\"English\"\n]\n\nIf no language requirement is stated:\n\n[]\n\nDo NOT assume English merely because the listing is written in English.\n\n========================\nSTEP 7 — CLOSING DATE\n\nExtract the actual application, submission, proposal, or expression-of-interest deadline ONLY when clearly provided.\n\nReturn:\n\nYYYY-MM-DD\n\nIf no deadline is provided:\n\nnull\n\nDo NOT use:\n\npublication date\nfetched date\ncurrent date\nan inferred date\n\nNever invent a deadline.\n\n========================\nSTEP 8 — SALARY\n\nExtract salary, consulting fee, daily rate, remuneration, or compensation ONLY when explicitly provided.\n\nExamples:\n\n\"$2,000/month\"\n\n\"USD 50,000–60,000\"\n\n\"USD 500/day\"\n\n\"Negotiable\"\n\nIf no compensation is provided:\n\nnull\n\nDo NOT estimate compensation.\n\n========================\nIMPORTANT EXAMPLE — INVALID RFI\n\nIf the listing title is:\n\n\"Request for Information (RFI): Gender Equality, Disability and Social Inclusion (GEDSI) Individual Consulting Services\"\n\nand the description says:\n\n\"World Vision is conducting a Request for Information to better understand the current market for GEDSI consulting services.\"\n\nand:\n\n\"This RFI is issued solely for market research and planning purposes.\"\n\nand:\n\n\"World Vision is under no obligation to proceed with any procurement process or contract award.\"\n\nand:\n\n\"Information received through this process may be used to assess market capacity, benchmark pricing, evaluate procurement options, inform future sourcing decisions, and determine whether a competitive procurement process will be undertaken.\"\n\nThen this is a MARKET RESEARCH RFI.\n\nIt is NOT a current consulting assignment.\n\nTherefore return:\n\n{\n\"title\": \"Request for Information (RFI): Gender Equality, Disability and Social Inclusion (GEDSI) Individual Consulting Services\",\n\"company\": \"World Vision\",\n\"location\": \"Bangladesh\",\n\"closing_date\": null,\n\"link\": \"https://reliefweb.int/node/4227005\",\n\"source\": \"ReliefWeb\",\n\"sector\": \"NGO / Humanitarian\",\n\"salary\": null,\n\"job_type\": \"Unknown\",\n\"seniority\": \"Unknown\",\n\"skills\": [\n\"Gender Equality\",\n\"Disability Inclusion\",\n\"Social Inclusion\",\n\"Strategy Development\",\n\"Technical Review\",\n\"Capacity Building\",\n\"Training\",\n\"Assessments and Evaluations\",\n\"Monitoring and Reporting\",\n\"Coaching and Mentoring\"\n],\n\"language\": [],\n\"is_valid_job\": false\n}\n\n========================\nIMPORTANT EXAMPLE — VALID CONSULTANCY\n\nIf the listing says:\n\n\"Individual Consultant – GEDSI Assessment\"\n\nand:\n\n\"World Vision seeks a qualified consultant to conduct a GEDSI assessment.\"\n\nand:\n\n\"Interested consultants should submit their CV, technical proposal and financial proposal by 30 September.\"\n\nThen this is a REAL consultancy opportunity.\n\nReturn:\n\n\"is_valid_job\": true\n\n\"job_type\": \"Consultancy\"\n\n========================\nFINAL VALIDITY TEST\n\nBefore returning the JSON, perform this internal check:\n\nQUESTION 1:\nIs this actually offering work or an assignment?\n\nIf NO:\n\n\"is_valid_job\": false\n\nQUESTION 2:\nCan an individual currently apply, submit qualifications, submit a proposal, submit an expression of interest, or compete for the assignment?\n\nIf NO:\n\n\"is_valid_job\": false\n\nQUESTION 3:\nIs the listing primarily collecting information about the market, suppliers, consultants, capabilities, pricing, or future procurement?\n\nIf YES:\n\n\"is_valid_job\": false\n\nQUESTION 4:\nDoes the listing explicitly say it is solely for market research, planning, information gathering, or market assessment?\n\nIf YES:\n\n\"is_valid_job\": false\n\nQUESTION 5:\nDoes it explicitly say there is no commitment to procure, award a contract, hire, or proceed with procurement?\n\nIf YES and there is no separate evidence of an actual assignment:\n\n\"is_valid_job\": false\n\nQUESTION 6:\nIf it is a consultancy/RFI, is there a defined assignment and a real opportunity to submit qualifications/proposals/applications?\n\nIf YES:\n\n\"is_valid_job\": true\n\n\"job_type\": \"Consultancy\"\n\nIf NO:\n\n\"is_valid_job\": false\n\n\"job_type\": \"Unknown\"\n\n========================\nFINAL OUTPUT CHECK\n\nBefore returning the answer, verify all of the following:\n\nThe response is valid JSON.\nThere is exactly ONE JSON object.\nThere are no Markdown code fences.\nThere is no explanation.\nThere are no extra fields.\n\"is_valid_job\" is true ONLY for a genuine current opportunity.\nMarket-research RFIs are false.\nProcurement/tender/vendor notices are false.\nA consulting RFI is NOT automatically valid.\nA valid consultancy requires an actual assignment.\nMissing closing dates are null.\nMissing salaries are null.\nMissing languages are [].\nMissing seniority is \"Unknown\".\nDo not infer seniority from years of experience alone.\nDo not default job type to Full-Time.\nIf a non-job RFI is false, use \"job_type\": \"Unknown\".\nReturn ONLY the JSON object.\n\nReturn ONLY the JSON object."
+            }
+          ]
+        },
+        "builtInTools": {},
+        "options": {
+          "textFormat": {
+            "textOptions": {
+              "type": "json_object"
+            }
+          }
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.openAi",
+      "typeVersion": 2.3,
+      "position": [
+        3680,
+        336
+      ],
+      "id": "62a26c82-ef45-4e21-bba5-672b73089427",
+      "name": "Message a model",
+      "credentials": {
+        "openAiApi": {
+          "id": "MsRivsTtvwYIKULn",
+          "name": "OpenAI account 2"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "maxItems": 3
+      },
+      "type": "n8n-nodes-base.limit",
+      "typeVersion": 1,
+      "position": [
+        3008,
+        320
+      ],
+      "id": "e3039f07-d003-4c9a-9399-d74cb800fb8f",
+      "name": "Limit"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const data = $json || {};\nlet parsed = {};\n\n// Read OpenAI Responses API output\nif (Array.isArray(data.output)) {\n  for (const outputItem of data.output) {\n    if (Array.isArray(outputItem.content)) {\n      for (const contentItem of outputItem.content) {\n        if (contentItem.type === \"output_text\" && contentItem.text) {\n          if (typeof contentItem.text === \"object\") {\n            parsed = contentItem.text;\n          } else if (typeof contentItem.text === \"string\") {\n            let rawContent = contentItem.text\n              .replace(/```json/gi, \"\")\n              .replace(/```/g, \"\")\n              .trim();\n            try {\n              parsed = JSON.parse(rawContent);\n            } catch (error) {\n              const match = rawContent.match(/\\{[\\s\\S]*\\}/);\n              if (match) {\n                try {\n                  parsed = JSON.parse(match[0]);\n                } catch (e) {\n                  parsed = {};\n                }\n              }\n            }\n          }\n        }\n      }\n    }\n  }\n}\n\nif (Object.keys(parsed).length === 0) {\n  if (typeof data.output_text === \"object\") {\n    parsed = data.output_text;\n  } else if (typeof data.output_text === \"string\") {\n    try { parsed = JSON.parse(data.output_text); } catch (e) {}\n  } else if (typeof data.text === \"string\") {\n    try { parsed = JSON.parse(data.text); } catch (e) {}\n  } else if (typeof data.text === \"object\") {\n    parsed = data.text;\n  }\n}\n\n// Since the loop was removed, pull original job data from Limit instead\nconst original = $('Limit').item.json || {};\n\nreturn {\n  json: {\n    source: parsed.source || original.source || \"\",\n    id: original.id || \"\",\n    title: parsed.title || original.title || \"\",\n    company: parsed.company || original.company || original.organisation || \"\",\n    location: parsed.location || original.location || \"\",\n    closing_date: parsed.closing_date ?? null,\n    link: parsed.link || original.link || \"\",\n    sector: parsed.sector || \"\",\n    salary: parsed.salary ?? null,\n    job_type: parsed.job_type || \"Unknown\",\n    seniority: parsed.seniority || \"Unknown\",\n    skills: Array.isArray(parsed.skills) ? parsed.skills : [],\n    language: Array.isArray(parsed.language) ? parsed.language : [],\n    description: original.description || \"\",\n    is_valid_job: typeof parsed.is_valid_job === \"boolean\" ? parsed.is_valid_job : false,\n    is_duplicate: original.is_duplicate !== undefined ? original.is_duplicate : false,\n    fetched_at: original.fetched_at || original.date_fetched || new Date().toISOString(),\n    dedupe_hash: original.dedupe_hash || \"\"\n  }\n};"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        4048,
+        336
+      ],
+      "id": "37aa9ee5-e975-42b3-8df3-b0fc2c2645b0",
+      "name": "Code in JavaScript1"
+    },
+    {
+      "parameters": {
+        "jsCode": "const source = String($json.source || '').trim().toLowerCase();\nconst link = String($json.link || '').trim().toLowerCase();\n\nlet id;\n\nif (link) {\n  // Use source + URL as the stable job identifier\n  id = `${source}|${link}`;\n} else {\n  // Fallback when there is no URL\n  const title = String($json.title || '').trim().toLowerCase();\n  const company = String($json.company || '').trim().toLowerCase();\n  const location = String($json.location || '').trim().toLowerCase();\n\n  id = `${source}|${title}|${company}|${location}`;\n}\n\nreturn {\n  json: {\n    ...$json,\n    id\n  }\n};"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        4912,
+        336
+      ],
+      "id": "15822788-3162-4131-8dac-e795aab6d53a",
+      "name": "Generate Job ID"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "7f14f9a6-65d5-464f-a6a5-260cf9df63c3",
+              "leftValue": "={{ $json.is_valid_job }}",
+              "rightValue": "true",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "looseTypeValidation": true,
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        4240,
+        336
+      ],
+      "id": "20c17dac-b026-4dba-b6ef-a14874f323a1",
+      "name": "If"
+    },
+    {
+      "parameters": {
+        "documentId": {
+          "__rl": true,
+          "value": "1KAC6xYbcKG4X3i_XXnSc3uIhqhbyaH1fOLCiIF3CXT0",
+          "mode": "list",
+          "cachedResultName": "KG — Job Monitor",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1KAC6xYbcKG4X3i_XXnSc3uIhqhbyaH1fOLCiIF3CXT0/edit?usp=drivesdk"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "gid=0",
+          "mode": "list",
+          "cachedResultName": "Sheet1",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1KAC6xYbcKG4X3i_XXnSc3uIhqhbyaH1fOLCiIF3CXT0/edit#gid=0"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        2560,
+        320
+      ],
+      "id": "7e997b15-57ce-42ff-a02a-86512b217547",
+      "name": "Get row(s) in sheet",
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "kI0QwkalfmJ0jFK9",
+          "name": "Google Sheets account 2"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Read new candidates and all existing rows from the Sheet.\nconst newJobs = $('Generate Dedupe Hash').all().map(item => item.json);\nconst existingRows = $input.all().map(item => item.json || {});\n\nconst normalize = value => String(value || '').trim().toLowerCase();\nconst existingHashes = new Set(\n  existingRows\n    .map(row => String(row['Dedupe Hash'] || '').trim())\n    .filter(Boolean)\n);\n\n// Keep the original first-seen date when a listing is updated at the same URL.\nconst firstSeenByLink = new Map(\n  existingRows\n    .filter(row => row['Link'] && row['Date Fetched'])\n    .map(row => [normalize(row['Link']), row['Date Fetched']])\n);\n\nconst trulyNewJobs = newJobs\n  .filter(job => !existingHashes.has(String(job.dedupe_hash || '').trim()))\n  .map(job => ({\n    ...job,\n    first_seen_at: firstSeenByLink.get(normalize(job.link)) || job.fetched_at || new Date().toISOString(),\n  }));\n\nreturn trulyNewJobs.map(job => ({ json: job }));"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2784,
+        320
+      ],
+      "id": "e4843432-6914-4a73-97ba-55fc24eeb814",
+      "name": "Filter New Jobs Only",
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {
+        "documentId": {
+          "__rl": true,
+          "value": "1KAC6xYbcKG4X3i_XXnSc3uIhqhbyaH1fOLCiIF3CXT0",
+          "mode": "list",
+          "cachedResultName": "KG — Job Monitor",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1KAC6xYbcKG4X3i_XXnSc3uIhqhbyaH1fOLCiIF3CXT0/edit?usp=drivesdk"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "gid=0",
+          "mode": "list",
+          "cachedResultName": "Sheet1",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1KAC6xYbcKG4X3i_XXnSc3uIhqhbyaH1fOLCiIF3CXT0/edit#gid=0"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        5408,
+        336
+      ],
+      "id": "d0962cad-9001-40af-a180-452cebb34ca3",
+      "name": "Read all jobs",
+      "executeOnce": true,
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "kI0QwkalfmJ0jFK9",
+          "name": "Google Sheets account 2"
+        }
+      },
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {
+        "jsCode": "const rows = $input.all().map(item => item.json || {});\nconst now = Date.now();\nconst MAX_AGE_MS = 90 * 24 * 60 * 60 * 1000;\nconst CAMBODIA_OFFSET = '+07:00';\n\nfunction parseSheetDate(value, closingDate = false) {\n  if (value === null || value === undefined || value === '') return null;\n\n  // Google Sheets may provide a serial date number.\n  if (typeof value === 'number' && value > 20000 && value < 80000) {\n    const timestamp = Date.UTC(1899, 11, 30) + value * 24 * 60 * 60 * 1000;\n    return Number.isFinite(timestamp) ? timestamp : null;\n  }\n\n  let text = String(value).trim();\n  if (!text) return null;\n\n  // Treat date-only values as Cambodian calendar dates. Keep closing dates\n  // active until the end of the stated day.\n  const isoDate = text.match(/^(\\d{4})-(\\d{1,2})-(\\d{1,2})(?:T00:00(?::00(?:\\.000)?)?(?:Z|[+-]\\d{2}:?\\d{2})?)?$/);\n  if (isoDate) {\n    const [, year, month, day] = isoDate;\n    const time = closingDate ? 'T23:59:59.999' : 'T00:00:00.000';\n    const timestamp = Date.parse(`${year}-${month.padStart(2, '0')}-${day.padStart(2, '0')}${time}${CAMBODIA_OFFSET}`);\n    return Number.isFinite(timestamp) ? timestamp : null;\n  }\n\n  // Also accept day-first numeric dates commonly used in Cambodia (D/M/YYYY).\n  const numericDate = text.match(/^(\\d{1,2})[/.\\-](\\d{1,2})[/.\\-](\\d{4})$/);\n  if (numericDate) {\n    const [, day, month, year] = numericDate;\n    const time = closingDate ? 'T23:59:59.999' : 'T00:00:00.000';\n    const timestamp = Date.parse(`${year}-${month.padStart(2, '0')}-${day.padStart(2, '0')}${time}${CAMBODIA_OFFSET}`);\n    return Number.isFinite(timestamp) ? timestamp : null;\n  }\n\n  // Remove ordinal suffixes so values such as \"11th November 2026\" parse.\n  text = text.replace(/\\b(\\d{1,2})(st|nd|rd|th)\\b/gi, '$1');\n  const parsed = Date.parse(text);\n  return Number.isFinite(parsed) ? parsed : null;\n}\n\nfunction isActiveForFeed(row) {\n  const closeTimestamp = parseSheetDate(row['Closing Date'], true);\n  if (closeTimestamp !== null) return closeTimestamp >= now;\n\n  // Date Fetched is only written for new rows by this workflow, so it acts as\n  // the immutable first-seen date when the publisher gives no closing date.\n  const firstSeenTimestamp = parseSheetDate(row['Date Fetched']);\n  if (firstSeenTimestamp === null) return true; // Keep rows whose age is unknown.\n  return now - firstSeenTimestamp <= MAX_AGE_MS;\n}\n\nconst activeRows = rows.filter(row =>\n  row['Job Title'] && row['Link'] && isActiveForFeed(row)\n);\n\nconst jobs = activeRows.map(row => ({\n  id: row['Dedupe Hash'] || row['Link'],\n  title: row['Job Title'] || '',\n  company: row['Organisation'] || '',\n  location: row['Location'] || '',\n  jobType: row['Job Type'] || '',\n  sector: row['Sector'] || '',\n  salary: row['Salary'] || '',\n  applyUrl: row['Link'] || '',\n  source: row['Source'] || '',\n  seniority: row['Seniority'] || '',\n  skills: row['Skills Keywords'] || '',\n  language: row['Language Required '] || row['Language Required'] || '',\n  closingDate: row['Closing Date'] || '',\n  postedAt: row['Date Fetched'] || '',\n}));\n\nreturn [{\n  json: {\n    jobsJson: JSON.stringify({ updatedAt: new Date().toISOString(), jobs }),\n    count: jobs.length,\n    excludedExpiredCount: rows.filter(row => row['Job Title'] && row['Link'] && !isActiveForFeed(row)).length,\n  },\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        5632,
+        336
+      ],
+      "id": "01c666b2-7b88-4822-846b-473ebb4e8a5d",
+      "name": "Build jobs.json",
+      "executeOnce": false
+    },
+    {
+      "parameters": {
+        "method": "PUT",
+        "url": "https://blob.vercel-storage.com/jobs.json",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "x-api-version",
+              "value": "7"
+            },
+            {
+              "name": "x-add-random-suffix",
+              "value": "0"
+            },
+            {
+              "name": "x-allow-overwrite",
+              "value": "1"
+            },
+            {
+              "name": "x-content-type",
+              "value": "application/json"
+            },
+            {
+              "name": "x-cache-control-max-age",
+              "value": "300"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "raw",
+        "rawContentType": "application/json",
+        "body": "={{ $json.jobsJson }}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        5856,
+        336
+      ],
+      "id": "f6c3d5f4-018f-4a8f-b390-3fe235f779a2",
+      "name": "Upload jobs.json",
+      "executeOnce": false,
+      "alwaysOutputData": false,
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "E5zhsdjCvQ9iNpge",
+          "name": "Header Auth account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "46789dc2-cff1-4c8c-8073-b832a9e41316",
+              "leftValue": "={{ $json.link }}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "notEmpty",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        3040,
+        320
+      ],
+      "id": "0b3c2f6e-cc4d-413f-bdde-f55b9ea7a532",
+      "name": "Has new job?"
+    }
+  ],
+  "connections": {
+    "ReliefWeb": {
+      "main": [
+        [
+          {
+            "node": "ReliefWeb Code",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "EuroCham": {
+      "main": [
+        [
+          {
+            "node": "EuroCham Code",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "CamHR": {
+      "main": [
+        [
+          {
+            "node": "CamHR Code",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "ReliefWeb Code": {
+      "main": [
+        [
+          {
+            "node": "Normalize Job Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "EuroCham Code": {
+      "main": [
+        [
+          {
+            "node": "Normalize Job Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "CamHR Code": {
+      "main": [
+        [
+          {
+            "node": "Normalize Job Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "CamboJob": {
+      "main": [
+        [
+          {
+            "node": "CamboJob Code",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "CamboJob Code": {
+      "main": [
+        [
+          {
+            "node": "Normalize Job Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Jobtify": {
+      "main": [
+        [
+          {
+            "node": "Jobtify Code",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Jobtify Code": {
+      "main": [
+        [
+          {
+            "node": "Normalize Job Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "BongThom": {
+      "main": [
+        [
+          {
+            "node": "BongThom Code",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "BongThom Code": {
+      "main": [
+        [
+          {
+            "node": "Normalize Job Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Khmer Online Jobs": {
+      "main": [
+        [
+          {
+            "node": "Khmer Online Jobs Code",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Khmer Online Jobs Code": {
+      "main": [
+        [
+          {
+            "node": "Normalize Job Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "MyWorld Careers Cambodia": {
+      "main": [
+        [
+          {
+            "node": "MyWorld Careers Cambodia Code",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "MyWorld Careers Cambodia Code": {
+      "main": [
+        [
+          {
+            "node": "Normalize Job Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HRINC Jobs": {
+      "main": [
+        [
+          {
+            "node": "HRINC Jobs Code",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HRINC Jobs Code": {
+      "main": [
+        [
+          {
+            "node": "Normalize Job Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Khmer24": {
+      "main": [
+        [
+          {
+            "node": "Khmer24 Code",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Khmer24 Code": {
+      "main": [
+        [
+          {
+            "node": "Normalize Job Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "JobNet": {
+      "main": [
+        [
+          {
+            "node": "JobNet Code",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "JobNet Code": {
+      "main": [
+        [
+          {
+            "node": "Normalize Job Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "JobCambodiaNew": {
+      "main": [
+        [
+          {
+            "node": "JobCambodiaNew Code",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "JobCambodiaNew Code": {
+      "main": [
+        [
+          {
+            "node": "Normalize Job Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "ODC": {
+      "main": [
+        [
+          {
+            "node": "ODC Code",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "ODC Code": {
+      "main": [
+        [
+          {
+            "node": "Normalize Job Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalize Job Data": {
+      "main": [
+        [
+          {
+            "node": "Validate Job",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate Job": {
+      "main": [
+        [
+          {
+            "node": "Generate Dedupe Hash",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        []
+      ]
+    },
+    "Generate Dedupe Hash": {
+      "main": [
+        [
+          {
+            "node": "Get row(s) in sheet",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Filter": {
+      "main": [
+        [
+          {
+            "node": "Generate Job ID",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Append or update row in sheet": {
+      "main": [
+        [
+          {
+            "node": "Read all jobs",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code in JavaScript": {
+      "main": [
+        [
+          {
+            "node": "Filter",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Schedule Trigger": {
+      "main": [
+        [
+          {
+            "node": "ReliefWeb",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "EuroCham",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "CamHR",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "CamboJob",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Jobtify",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "BongThom",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Khmer Online Jobs",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "MyWorld Careers Cambodia",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "HRINC Jobs",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Khmer24",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "JobNet",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "JobCambodiaNew",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "ODC",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Message a model": {
+      "main": [
+        [
+          {
+            "node": "Code in JavaScript1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Limit": {
+      "main": [
+        [
+          {
+            "node": "Message a model",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code in JavaScript1": {
+      "main": [
+        [
+          {
+            "node": "If",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Generate Job ID": {
+      "main": [
+        [
+          {
+            "node": "Append or update row in sheet",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "If": {
+      "main": [
+        [
+          {
+            "node": "Code in JavaScript",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        []
+      ]
+    },
+    "Get row(s) in sheet": {
+      "main": [
+        [
+          {
+            "node": "Filter New Jobs Only",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Filter New Jobs Only": {
+      "main": [
+        [
+          {
+            "node": "Has new job?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read all jobs": {
+      "main": [
+        [
+          {
+            "node": "Build jobs.json",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build jobs.json": {
+      "main": [
+        [
+          {
+            "node": "Upload jobs.json",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Has new job?": {
+      "main": [
+        [
+          {
+            "node": "Append or update row in sheet",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Read all jobs",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {
+    "Schedule Trigger": [
+      {
+        "timestamp": "2026-09-12T08:00:40.000+00:00",
+        "Readable date": "September 12th 2026, 8:00:40 am",
+        "Readable time": "8:00:40 am",
+        "Day of week": "Saturday",
+        "Year": "2026",
+        "Month": "September",
+        "Day of month": "12",
+        "Hour": "08",
+        "Minute": "00",
+        "Second": "40",
+        "Timezone": "Etc/UTC (UTC+00:00)"
+      }
+    ]
+  },
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "e605c080f14b06cab966c4ee9813aac727e9198b797ffa17fe8fa25893839278"
+  }
+}

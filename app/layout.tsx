@@ -1,12 +1,12 @@
 import { Analytics } from '@vercel/analytics/next'
 import type { Metadata, Viewport } from 'next'
-import { Noto_Sans_Khmer } from 'next/font/google'
+import localFont from 'next/font/local'
 import Script from 'next/script'
 import './globals.css'
 
-const notoSansKhmer = Noto_Sans_Khmer({
-  subsets: ['khmer', 'latin'],
-  weight: ['400', '500', '600', '700'],
+const notoSansKhmer = localFont({
+  src: '../public/fonts/NotoSansKhmer.ttf',
+  weight: '100 900',
   variable: '--font-noto-sans-khmer',
   display: 'swap',
 })
