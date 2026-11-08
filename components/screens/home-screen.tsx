@@ -1,15 +1,18 @@
 "use client"
 
 import { useMemo, useEffect, useRef, useState, useCallback } from "react"
-import { AlertCircle, Search, X, ArrowUp, Check } from "lucide-react"
+import { AlertCircle, Search, X, ArrowUp, SlidersHorizontal } from "lucide-react"
 import { useApp } from "@/components/app-provider"
 import { Button } from "@/components/ui/button"
-import { PosterCard } from "./job-poster"
+import { JobCard, JobCardSkeleton } from "@/components/job-card"
+import { trackEvent } from "@/lib/utils"
+import { t } from "@/lib/translation"
+import { LanguageToggle } from "@/components/language-toggle"
+import { isJobExpired } from "@/lib/api"
 
+const PAGE_SIZE = 10
 
-const PAGE_SIZE = 8
-
-type Job = any // swap for your real Job type
+type Job = any
 
 function parseDate(iso?: string): number {
   if (!iso) return 0
@@ -17,24 +20,20 @@ function parseDate(iso?: string): number {
   return isNaN(ms) ? 0 : ms
 }
 
-function isPastClosingDate(closingDate?: string): boolean {
-  const t = parseDate(closingDate)
-  return t > 0 && t < Date.now()
-}
-
 export function HomeScreen() {
-  const { allJobs, jobsError, retryLoadJobs, openJob, toggleSaved, isSaved } = useApp()
+  const { allJobs, jobsError, retryLoadJobs, toggleSaved, isSaved, goTo, locale } = useApp()
   const [visibleCount, setVisibleCount] = useState(PAGE_SIZE)
   const [searchQuery, setSearchQuery] = useState("")
   const [toast, setToast] = useState<string | null>(null)
   const [showTop, setShowTop] = useState(false)
   const sentinelRef = useRef<HTMLDivElement | null>(null)
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const searchInputRef = useRef<HTMLInputElement | null>(null)
 
   const showToast = useCallback((msg: string) => {
     setToast(msg)
     if (toastTimer.current) clearTimeout(toastTimer.current)
-    toastTimer.current = setTimeout(() => setToast(null), 1800)
+    toastTimer.current = setTimeout(() => setToast(null), 2200)
   }, [])
 
   useEffect(() => {
@@ -42,7 +41,7 @@ export function HomeScreen() {
   }, [searchQuery])
 
   useEffect(() => {
-    const onScroll = () => setShowTop(window.scrollY > 600)
+    const onScroll = () => setShowTop(window.scrollY > 500)
     window.addEventListener("scroll", onScroll, { passive: true })
     return () => window.removeEventListener("scroll", onScroll)
   }, [])
@@ -55,7 +54,7 @@ export function HomeScreen() {
       .filter((job: Job) => {
         if (seen.has(job.id)) return false
         seen.add(job.id)
-        if (isPastClosingDate(job.closingDate)) return false
+        if (isJobExpired(job)) return false
         if (!q) return true
         return [job.title, job.company, job.locationLabel, job.skills, job.fieldLabel].some((v) =>
           v?.toLowerCase().includes(q),
@@ -75,34 +74,67 @@ export function HomeScreen() {
       (entries) => {
         if (entries[0].isIntersecting) setVisibleCount((c) => Math.min(c + PAGE_SIZE, feedJobs.length))
       },
-      { rootMargin: "300px" },
+      { rootMargin: "400px" },
     )
     observer.observe(el)
     return () => observer.disconnect()
   }, [hasMore, feedJobs.length])
 
+  function handleSearch(q: string) {
+    setSearchQuery(q)
+    if (q.trim()) {
+      trackEvent("home_search", { query: q.trim() })
+    }
+  }
+
   return (
     <div className="flex flex-1 flex-col">
-      <header className="sticky top-0 z-10 border-b border-border bg-background/95 px-5 pb-3 backdrop-blur [padding-top:calc(1.25rem+env(safe-area-inset-top))]">
-        <h1 className="text-2xl font-bold text-foreground">Latest Jobs</h1>
-        <p className="mt-0.5 text-sm text-muted-foreground">
-          {isLoading ? "Loading jobs…" : jobsError ? "Could not load jobs" : `${feedJobs.length} open roles`}
-        </p>
-        <div className="relative mt-3 flex items-center">
-          <Search className="pointer-events-none absolute left-3.5 h-4 w-4 text-muted-foreground" />
+      <header className="sticky top-0 z-10 border-b border-border bg-background/95 px-4 pb-3 backdrop-blur [padding-top:calc(1.25rem+env(safe-area-inset-top))]">
+        {/* Title row */}
+        <div className="flex items-center justify-between gap-2">
+          <div>
+            <h1 className="text-xl font-bold text-foreground">{t("Latest Jobs", locale)}</h1>
+            <p className="text-xs text-muted-foreground">
+              {isLoading
+                ? t("Loading…", locale)
+                : jobsError
+                ? t("Could not load jobs", locale)
+                : locale === "km" ? `ការងារកំពុងជ្រើសរើស ${feedJobs.length}` : `${feedJobs.length} open role${feedJobs.length !== 1 ? "s" : ""}`}
+            </p>
+          </div>
+          {/* Quick link to For You tab */}
+          <div className="flex shrink-0 items-center gap-2">
+            <LanguageToggle />
+            <button
+              type="button"
+              onClick={() => goTo("jobs")}
+              aria-label={t("Personalised recommendations", locale)}
+              className="flex h-9 w-9 items-center justify-center rounded-full border border-border bg-card text-muted-foreground transition-colors hover:text-foreground"
+              title={t("For You — personalised recommendations", locale)}
+            >
+              <SlidersHorizontal className="h-4 w-4" />
+            </button>
+          </div>
+        </div>
+
+        {/* Search bar */}
+        <div className="relative mt-2.5 flex items-center">
+          <Search className="pointer-events-none absolute left-3 h-4 w-4 text-muted-foreground" />
           <input
+            ref={searchInputRef}
             type="text"
             value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            placeholder="Search by title, company, skills, or city..."
+            onChange={(e) => handleSearch(e.target.value)}
+            placeholder={t("Search jobs, companies, skills…", locale)}
             className="h-10 w-full rounded-xl border border-border bg-card pl-9 pr-9 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary/25"
+            aria-label={t("Search jobs", locale)}
           />
           {searchQuery && (
             <button
               type="button"
               onClick={() => setSearchQuery("")}
-              aria-label="Clear search"
-              className="absolute right-3 flex h-5 w-5 items-center justify-center rounded-full bg-secondary text-muted-foreground"
+              aria-label={t("Clear search", locale)}
+              className="absolute right-3 flex h-5 w-5 items-center justify-center rounded-full bg-muted text-muted-foreground hover:bg-border"
             >
               <X className="h-3 w-3" />
             </button>
@@ -110,59 +142,81 @@ export function HomeScreen() {
         </div>
       </header>
 
-      <div className="flex-1 space-y-5 px-4 py-4">
+      <div className="flex-1 space-y-3 px-4 py-4">
         {jobsError ? (
           <div className="flex flex-col items-center gap-3 py-20 text-center">
-            <AlertCircle className="h-8 w-8 text-destructive" />
-            <p className="font-semibold text-foreground">We couldn&apos;t load jobs</p>
-            <p className="text-sm text-muted-foreground">Check your connection and try again.</p>
-            <Button variant="outline" className="mt-2 rounded-xl" onClick={retryLoadJobs}>Try again</Button>
+            <AlertCircle className="h-7 w-7 text-destructive" />
+            <p className="font-semibold text-foreground">{t("Could not load jobs", locale)}</p>
+            <p className="text-sm text-muted-foreground">{t("Check your connection and try again.", locale)}</p>
+            <Button variant="outline" className="mt-2 rounded-xl" onClick={retryLoadJobs}>
+              {t("Try again", locale)}
+            </Button>
           </div>
         ) : isLoading ? (
-          Array.from({ length: 3 }).map((_, i) => (
-            <div key={i} className="aspect-[4/5] w-full animate-pulse rounded-xl bg-muted" />
-          ))
+          // Skeleton loaders that match the real card layout
+          <>
+            {Array.from({ length: 5 }).map((_, i) => (
+              <JobCardSkeleton key={i} />
+            ))}
+          </>
         ) : feedJobs.length === 0 ? (
           <div className="py-20 text-center">
-            <p className="font-semibold text-foreground">No matching jobs</p>
-            <p className="text-sm text-muted-foreground">Try different keywords.</p>
+            <p className="font-semibold text-foreground">{t("No matching jobs", locale)}</p>
+            <p className="mt-1 text-sm text-muted-foreground">{t("Try different keywords.", locale)}</p>
+            <Button
+              variant="outline"
+              className="mt-4 rounded-xl"
+              onClick={() => setSearchQuery("")}
+            >
+              {t("Clear search", locale)}
+            </Button>
           </div>
         ) : (
           <>
-            {visibleJobs.map((job: Job) => (
-              <PosterCard
+            {visibleJobs.map((job: Job, i: number) => (
+              <div
                 key={job.id}
-                job={job}
-                saved={isSaved(job.id)}
-                onOpen={() => openJob(job.id)}
-                onToggleSave={() => toggleSaved(job.id, job)}
-                onToast={showToast}
-              />
+                className="animate-in fade-in slide-in-from-bottom-2"
+                style={{ animationDelay: `${Math.min(i * 30, 150)}ms`, animationFillMode: "both" }}
+              >
+                <JobCard
+                  job={job}
+                  saved={isSaved(job.id)}
+                  onToggleSave={() => toggleSaved(job.id, job)}
+                  onToast={showToast}
+                />
+              </div>
             ))}
             {hasMore ? (
-              <div ref={sentinelRef} className="py-4 text-center text-xs text-muted-foreground">Loading more…</div>
+              <div ref={sentinelRef} className="py-4 text-center text-xs text-muted-foreground">
+                {t("Loading more…", locale)}
+              </div>
             ) : (
-              <div className="py-6 text-center text-xs text-muted-foreground">You&apos;re all caught up</div>
+              <div className="py-6 text-center text-xs text-muted-foreground">
+                {locale === "km" ? `អ្នកបានមើលអស់ហើយ · មានការងារ ${feedJobs.length}` : <>You&apos;re all caught up · {feedJobs.length} jobs listed</>}
+              </div>
             )}
           </>
         )}
       </div>
 
+      {/* Back to top */}
       {showTop && (
         <button
           type="button"
           onClick={() => window.scrollTo({ top: 0, behavior: "smooth" })}
-          aria-label="Back to top"
-          className="fixed bottom-24 right-4 z-20 flex h-11 w-11 items-center justify-center rounded-full bg-primary text-primary-foreground shadow-lg"
+          aria-label={t("Back to top", locale)}
+          className="fixed bottom-24 right-4 z-20 flex h-11 w-11 items-center justify-center rounded-full bg-primary text-primary-foreground shadow-lg transition-transform active:scale-95"
         >
           <ArrowUp className="h-5 w-5" />
         </button>
       )}
 
+      {/* Toast */}
       {toast && (
-        <div className="fixed bottom-24 left-1/2 z-30 -translate-x-1/2">
-          <div className="flex items-center gap-2 rounded-full bg-foreground px-4 py-2 text-sm text-background shadow-lg">
-            <Check className="h-4 w-4" /> {toast}
+        <div className="fixed bottom-24 left-1/2 z-30 -translate-x-1/2 animate-in fade-in slide-in-from-bottom-2">
+          <div className="rounded-full bg-foreground px-4 py-2 text-sm text-background shadow-lg">
+            {toast}
           </div>
         </div>
       )}

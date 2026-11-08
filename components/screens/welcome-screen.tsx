@@ -3,9 +3,10 @@
 import { ArrowRight, MapPin, Sparkles, Wallet } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { useApp } from "@/components/app-provider"
+import { t } from "@/lib/translation"
 
 export function WelcomeScreen() {
-  const { startOnboarding } = useApp()
+  const { startOnboarding, locale } = useApp()
 
   return (
     <div className="flex min-h-dvh flex-col bg-background px-6 [padding-bottom:calc(1.5rem+env(safe-area-inset-bottom))] [padding-top:calc(2rem+env(safe-area-inset-top))]">
@@ -20,17 +21,16 @@ export function WelcomeScreen() {
           KhmerGigs
         </p>
         <h1 className="text-3xl font-bold leading-tight text-foreground text-balance">
-          Find Jobs That Fit You
+          {t("Find Jobs That Fit You", locale)}
         </h1>
         <p className="mt-3 max-w-xs text-pretty leading-relaxed text-muted-foreground">
-          Tell us what you&apos;re looking for and we&apos;ll find jobs that match your
-          preferences.
+          {t("Tell us what you're looking for and we'll find jobs that match your preferences.", locale)}
         </p>
 
         <ul className="mt-8 w-full max-w-xs space-y-3 text-left">
-          <Feature icon={<Sparkles className="h-4 w-4" />} text="Matched to your goals" />
-          <Feature icon={<MapPin className="h-4 w-4" />} text="Jobs across Cambodia" />
-          <Feature icon={<Wallet className="h-4 w-4" />} text="Clear salary ranges" />
+          <Feature icon={<Sparkles className="h-4 w-4" />} text={t("Matched to your goals", locale)} />
+          <Feature icon={<MapPin className="h-4 w-4" />} text={t("Jobs across Cambodia", locale)} />
+          <Feature icon={<Wallet className="h-4 w-4" />} text={t("Clear salary ranges", locale)} />
         </ul>
       </div>
 
@@ -39,7 +39,7 @@ export function WelcomeScreen() {
         onClick={startOnboarding}
         className="h-12 w-full rounded-xl text-base"
       >
-        Get Started
+        {t("Get Started", locale)}
         <ArrowRight className="ml-1 h-4 w-4" />
       </Button>
     </div>

@@ -13,6 +13,7 @@ import { SavedScreen } from "@/components/screens/saved-screen"
 import { ProfileScreen } from "@/components/screens/profile-screen"
 import { JobDetailsScreen } from "@/components/screens/job-details-screen"
 import { EditPreferencesScreen } from "@/components/screens/edit-preferences-screen"
+import { t } from "@/lib/translation"
 
 export function AppShell() {
   return (
@@ -26,7 +27,7 @@ export function AppShell() {
 const TAB_SCREENS = new Set(["home", "jobs", "saved", "profile"])
 
 function ScreenRouter() {
-  const { screen, completeOnboarding, goTo, error, clearError } = useApp()
+  const { screen, completeOnboarding, goTo, error, clearError, locale } = useApp()
   const [toast, setToast] = useState<string | null>(null)
 
   // Any save/load failure surfaced via app-provider gets its own error toast,
@@ -40,7 +41,7 @@ function ScreenRouter() {
       <Frame>
         <div className="flex min-h-dvh flex-col items-center justify-center gap-3 bg-background">
           <Loader2 className="h-6 w-6 animate-spin text-primary" />
-          <p className="text-sm text-muted-foreground">Loading…</p>
+          <p className="text-sm text-muted-foreground">{t("Loading…", locale)}</p>
         </div>
         {errorToast}
       </Frame>
@@ -68,7 +69,7 @@ function ScreenRouter() {
   if (screen === "edit-preferences") {
     return (
       <Frame>
-        <EditPreferencesScreen onSaved={() => setToast("Preferences updated!")} />
+        <EditPreferencesScreen onSaved={() => setToast(locale === "km" ? "បានធ្វើបច្ចុប្បន្នភាពចំណូលចិត្ត" : "Preferences updated!")} />
         {toast && <Toast message={toast} onDismiss={() => setToast(null)} />}
         {errorToast}
       </Frame>

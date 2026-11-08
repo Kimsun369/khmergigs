@@ -57,8 +57,10 @@ export interface Job {
   applyUrl: string
   /** Human-readable relative time string, e.g. "2 days ago". */
   postedAgo: string
-  /** Raw ISO date string from jobs.json, used for sorting and time calculations. */
+  /** Normalized publisher timestamp from jobs.json, used for sorting and display. */
   postedAt: string
+  /** Timestamp when the feed importer collected the row, when available. */
+  fetchedAt?: string
   /** Extra metadata from jobs.json (all optional). */
   seniority?: string
   skills?: string
@@ -71,4 +73,6 @@ export interface Job {
 export interface RecommendedJob extends Job {
   match: number
   matchReason: string
+  matchedPreferenceCount: number
+  preferenceCount: number
 }

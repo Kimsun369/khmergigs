@@ -3,13 +3,19 @@
 import { useEffect } from "react"
 import { Loader2 } from "lucide-react"
 import { useApp } from "@/components/app-provider"
+import { trackEvent } from "@/lib/utils"
+import { t } from "@/lib/translation"
 
 export function LoadingScreen() {
-  const { finishLoading } = useApp()
+  const { finishLoading, locale } = useApp()
 
-  // Simulate the recommendation request completing, then move to the jobs list.
   useEffect(() => {
-    const t = setTimeout(finishLoading, 1600)
+    trackEvent("recommendations_loading_started")
+    // Short delay so the user sees feedback, then proceed
+    const t = setTimeout(() => {
+      trackEvent("recommendations_loading_finished")
+      finishLoading()
+    }, 1200)
     return () => clearTimeout(t)
   }, [finishLoading])
 
@@ -22,9 +28,9 @@ export function LoadingScreen() {
         </span>
       </div>
       <div>
-        <h1 className="text-xl font-bold text-foreground">Finding jobs for you…</h1>
+        <h1 className="text-xl font-bold text-foreground">{t("Finding jobs for you…", locale)}</h1>
         <p className="mt-1.5 text-sm text-muted-foreground">
-          Matching your preferences to open roles
+          {t("Matching your preferences to open roles in Cambodia", locale)}
         </p>
       </div>
     </div>

@@ -11,6 +11,7 @@ import {
   type ReactNode,
 } from "react"
 import type { Job, Preferences, RecommendedJob } from "@/lib/types"
+import type { Locale } from "@/lib/translation"
 import {
   getEffectiveTelegramUser,
   initTelegram,
@@ -21,6 +22,7 @@ import {
   getRecommendations,
   getSavedJobs,
   getUserProfile,
+  isJobExpired,
   saveUserPreferences,
 } from "@/lib/api"
 import {
@@ -30,6 +32,7 @@ import {
   savePreferencesToStorage,
   saveSavedJobIds,
 } from "@/lib/storage"
+import { trackEvent } from "@/lib/utils"
 
 export type Screen =
   | "checking"
@@ -53,6 +56,9 @@ interface AppState {
   allJobs: Job[]
   selectedJobId: string | null
   telegramUser: TelegramUser | null
+  locale: Locale
+  setLocale: (l: Locale) => void
+  toggleLocale: () => void
   error: string | null
   jobsError: string | null
   retryLoadJobs: () => void
@@ -82,13 +88,53 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [selectedJobId, setSelectedJobId] = useState<string | null>(null)
   const [previousScreen, setPreviousScreen] = useState<Screen>("home")
   const [telegramUser, setTelegramUser] = useState<TelegramUser | null>(null)
+  const [locale, setLocaleState] = useState<Locale>("km") // Default to Khmer for local users
   const [error, setError] = useState<string | null>(null)
   const [jobsError, setJobsError] = useState<string | null>(null)
+
+  useEffect(() => {
+    if (typeof document !== "undefined") {
+      document.documentElement.lang = locale === "km" ? "km-KH" : "en"
+    }
+  }, [locale])
+
+  // Initialize locale from storage if previously selected
+  useEffect(() => {
+    try {
+      const savedLocale = localStorage.getItem("kg_locale") as Locale | null
+      if (savedLocale === "en" || savedLocale === "km") {
+        setLocaleState(savedLocale)
+      }
+    } catch {
+      // ignore
+    }
+  }, [])
+
+  const setLocale = useCallback((l: Locale) => {
+    setLocaleState(l)
+    try {
+      localStorage.setItem("kg_locale", l)
+    } catch {
+      // ignore
+    }
+  }, [])
+
+  const toggleLocale = useCallback(() => {
+    setLocaleState((prev) => {
+      const next = prev === "km" ? "en" : "km"
+      try {
+        localStorage.setItem("kg_locale", next)
+      } catch {
+        // ignore
+      }
+      return next
+    })
+  }, [])
 
   // ── Derived: savedJobs = full Job objects for saved ids ─────────────────────
   // Computed from allJobs + savedJobIds so the Saved tab is always consistent.
   const savedJobs = useMemo<Job[]>(
-    () => allJobs.filter((j) => savedJobIds.includes(j.id)),
+    () => allJobs.filter((j) => savedJobIds.includes(j.id) && !isJobExpired(j)),
     [allJobs, savedJobIds],
   )
 
@@ -101,6 +147,32 @@ export function AppProvider({ children }: { children: ReactNode }) {
     lastSaveRef.current = { key, at: Date.now() }
     return false
   }, [])
+
+  // ── Deep linking: open job directly if requested via URL or Telegram start_param ──
+  const deepLinkChecked = useRef(false)
+  useEffect(() => {
+    if (deepLinkChecked.current || allJobs.length === 0) return
+    if (typeof window === "undefined") return
+
+    try {
+      const params = new URLSearchParams(window.location.search)
+      let targetId = params.get("job")
+      if (!targetId) {
+        const tgStart = (window as any).Telegram?.WebApp?.initDataUnsafe?.start_param
+        if (tgStart) {
+          targetId = tgStart.startsWith("job_") ? tgStart.replace("job_", "") : tgStart
+        }
+      }
+
+      if (targetId && allJobs.some((j) => j.id === targetId)) {
+        deepLinkChecked.current = true
+        setSelectedJobId(targetId)
+        setScreen("job-details")
+      }
+    } catch {
+      // ignore
+    }
+  }, [allJobs])
 
   // ── Load all jobs and compute recommendations ────────────────────────────────
   const loadJobs = useCallback(async (prefs: Preferences) => {
@@ -186,6 +258,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
         void loadJobs(prefs)
       } else {
         // New user with no preferences — land on Home; For You tab shows onboarding.
+        trackEvent("onboarding_started")
         setScreen("home")
         void loadJobs(EMPTY_PREFS)
       }
@@ -258,6 +331,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   }, [loadJobs, preferences])
 
   const openJob = useCallback((id: string) => {
+    trackEvent("job_opened", { job_id: id })
     setSelectedJobId(id)
     setScreen((current) => {
       if (current !== "job-details") setPreviousScreen(current)
@@ -277,7 +351,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const toggleSaved = useCallback(
     (id: string) => {
       setSavedJobIds((prev) => {
-        const next = prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]
+        const isSaving = !prev.includes(id)
+        trackEvent(isSaving ? "job_saved" : "job_unsaved", { job_id: id })
+        const next = isSaving ? [...prev, id] : prev.filter((x) => x !== id)
         // Persist outside the state updater to avoid side effects inside it.
         void saveSavedJobIds(next)
         return next
@@ -297,6 +373,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
       allJobs,
       selectedJobId,
       telegramUser,
+      locale,
+      setLocale,
+      toggleLocale,
       error,
       jobsError,
       retryLoadJobs,
@@ -321,6 +400,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
       allJobs,
       selectedJobId,
       telegramUser,
+      locale,
+      setLocale,
+      toggleLocale,
       error,
       jobsError,
       retryLoadJobs,

@@ -96,12 +96,21 @@ function normalizeLocation(raw: string): LocationKey {
   return "provinces"
 }
 
+function normalizePostingTimestamp(raw: string): string {
+  const value = raw.trim()
+  if (!value) return ""
+  if (/^\d{10}$/.test(value)) return new Date(Number(value) * 1000).toISOString()
+  if (/^\d{13}$/.test(value)) return new Date(Number(value)).toISOString()
+  const parsed = new Date(value)
+  return Number.isNaN(parsed.getTime()) ? value : parsed.toISOString()
+}
+
 /** Human-readable "X days ago" derived from an ISO date string. */
 function postedAgo(raw: string): string {
   if (!raw) return ""
   try {
     const ms = Date.now() - new Date(raw).getTime()
-    if (isNaN(ms)) return raw
+    if (isNaN(ms)) return ""
     const days = Math.floor(ms / 86_400_000)
     if (days === 0) return "Today"
     if (days === 1) return "Yesterday"
@@ -133,11 +142,38 @@ function mapRawJob(raw: Record<string, string>): Job | null {
 
   const jobTypeRaw = raw["jobType"] ?? ""
   const typeKey = normalizeType(jobTypeRaw)
+  const hasKnownJobType = /full|part|intern|freelance|contract/i.test(jobTypeRaw)
+  const typeLabel = hasKnownJobType
+    ? typeLabels[typeKey]
+    : /^(unknown|n\/a|na|none|null|undefined|-)$/i.test(jobTypeRaw.trim())
+      ? ""
+      : jobTypeRaw.trim()
 
   const sectorRaw = raw["sector"] ?? ""
   const fieldKey = normalizeField(sectorRaw)
 
-  const rawPostedAt = raw["postedAt"] ?? ""
+  // Prefer the publisher's original timestamp over any time the feed importer
+  // refreshed the row. Telegram scraper feeds should populate one of these
+  // source-date fields when available.
+  const rawPostedAt =
+    raw["telegramPostedAt"]?.trim() ||
+    raw["telegramMessageDate"]?.trim() ||
+    raw["telegramDate"]?.trim() ||
+    raw["messageDate"]?.trim() ||
+    raw["sourcePostedAt"]?.trim() ||
+    raw["sourceDate"]?.trim() ||
+    raw["publishedAt"]?.trim() ||
+    raw["published_at"]?.trim() ||
+    raw["publishedDate"]?.trim() ||
+    raw["postedDate"]?.trim() ||
+    raw["datePosted"]?.trim() ||
+    raw["posted_at"]?.trim() ||
+    raw["postDate"]?.trim() ||
+    raw["post_date"]?.trim() ||
+    raw["date"]?.trim() ||
+    raw["postedAt"]?.trim() ||
+    ""
+  const normalizedPostedAt = normalizePostingTimestamp(rawPostedAt)
 
   return {
     id,
@@ -146,13 +182,16 @@ function mapRawJob(raw: Record<string, string>): Job | null {
     locationKey,
     locationLabel,
     type: typeKey,
-    typeLabel: typeLabels[typeKey],
+    typeLabel,
     fieldKey,
-    fieldLabel: fieldLabels[fieldKey],
+    fieldLabel: sectorRaw.trim() || fieldLabels[fieldKey],
     salary: raw["salary"] ?? "",
     applyUrl: raw["applyUrl"] ?? "",
-    postedAgo: postedAgo(rawPostedAt),
-    postedAt: rawPostedAt,
+    postedAgo: postedAgo(normalizedPostedAt),
+    postedAt: normalizedPostedAt,
+    fetchedAt: normalizePostingTimestamp(
+      raw["dateFetched"]?.trim() || raw["date_fetched"]?.trim() || raw["fetchedAt"]?.trim() || "",
+    ),
     seniority: raw["seniority"] || undefined,
     skills: raw["skills"] || undefined,
     language: raw["language"] || undefined,
@@ -203,16 +242,29 @@ export async function getAllJobs(): Promise<Job[]> {
 
 // ─── Client-side scoring / recommendations ────────────────────────────────────
 
-/** Returns true if a closingDate string is in the past. */
-function isClosed(closingDate?: string): boolean {
-  if (!closingDate) return false
-  try {
-    const d = new Date(closingDate)
-    if (isNaN(d.getTime())) return false
-    return d.getTime() < Date.now()
-  } catch {
-    return false
-  }
+const MAX_JOB_AGE_MS = 90 * 24 * 60 * 60 * 1000
+
+function parseJobDate(value?: string): number | undefined {
+  if (!value) return undefined
+  // Keep date-only closing dates active through the end of that local day.
+  const dateOnly = value.match(/^(\d{4})-(\d{2})-(\d{2})$/)
+  const date = dateOnly
+    ? new Date(Number(dateOnly[1]), Number(dateOnly[2]) - 1, Number(dateOnly[3]), 23, 59, 59, 999)
+    : new Date(value)
+  const timestamp = date.getTime()
+  return Number.isFinite(timestamp) ? timestamp : undefined
+}
+
+/**
+ * Exclude listings past their stated closing date. For listings without one,
+ * use publisher posting date, then first fetched date, as a 90-day stale cutoff.
+ */
+export function isJobExpired(job: Pick<Job, "closingDate" | "postedAt" | "fetchedAt">, now = Date.now()): boolean {
+  const closingTimestamp = parseJobDate(job.closingDate)
+  if (closingTimestamp !== undefined) return closingTimestamp < now
+
+  const referenceTimestamp = parseJobDate(job.postedAt) ?? parseJobDate(job.fetchedAt)
+  return referenceTimestamp !== undefined && now - referenceTimestamp > MAX_JOB_AGE_MS
 }
 
 /**
@@ -226,32 +278,35 @@ export async function getRecommendations(
 ): Promise<RecommendedJob[]> {
   const jobs = await getAllJobs()
 
-  type Scored = { job: Job; score: number }
+  type Scored = { job: Job; matchedPreferenceCount: number; preferenceCount: number }
   const scored: Scored[] = []
 
   for (const job of jobs) {
-    if (isClosed(job.closingDate)) continue
+    if (isJobExpired(job)) continue
 
-    let score = 1 // base
+    const preferenceCount = [prefs.jobType, prefs.field, prefs.location].filter(Boolean).length
+    let matchedPreferenceCount = 0
 
-    if (prefs.jobType && job.type === prefs.jobType) score += 3
-    if (prefs.field && (job.fieldKey === prefs.field || job.fieldKey === "any")) score += 3
-    if (prefs.location && (job.locationKey === prefs.location || job.locationKey === "remote")) score += 3
+    if (prefs.jobType && job.type === prefs.jobType) matchedPreferenceCount += 1
+    if (prefs.field && (job.fieldKey === prefs.field || job.fieldKey === "any")) matchedPreferenceCount += 1
+    if (prefs.location && (job.locationKey === prefs.location || job.locationKey === "remote")) matchedPreferenceCount += 1
 
-    scored.push({ job, score })
+    scored.push({ job, matchedPreferenceCount, preferenceCount })
   }
 
   // Sort by score desc, then by postedAgo string (we stored ISO date in postedAgo fallback,
   // but we have no raw date in Job; sort by title as secondary stable key).
   scored.sort((a, b) => {
-    if (b.score !== a.score) return b.score - a.score
+    const aMatch = a.preferenceCount ? a.matchedPreferenceCount / a.preferenceCount : 0
+    const bMatch = b.preferenceCount ? b.matchedPreferenceCount / b.preferenceCount : 0
+    if (bMatch !== aMatch) return bMatch - aMatch
     return 0 // preserve original order (jobs.json is already newest-first from n8n)
   })
 
   const top10 = scored.slice(0, 10)
 
-  return top10.map(({ job, score }): RecommendedJob => {
-    const match = Math.min(99, 40 + score * 5)
+  return top10.map(({ job, matchedPreferenceCount, preferenceCount }): RecommendedJob => {
+    const match = preferenceCount > 0 ? Math.round((matchedPreferenceCount / preferenceCount) * 100) : 0
 
     // Build a human-friendly match reason.
     const reasons: string[] = []
@@ -267,12 +322,9 @@ export async function getRecommendations(
       reasons.push(typeLabels[job.type])
     }
 
-    const matchReason =
-      reasons.length > 0
-        ? `Good match for ${reasons.join(" in ")}`
-        : "Based on your preferences"
+    const matchReason = `Matches ${matchedPreferenceCount} of ${preferenceCount} selected preferences${reasons.length ? ` (${reasons.join(", ")})` : ""}`
 
-    return { ...job, match, matchReason }
+    return { ...job, match, matchReason, matchedPreferenceCount, preferenceCount }
   })
 }
 

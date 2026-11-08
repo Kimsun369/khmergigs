@@ -1,12 +1,14 @@
 import { Analytics } from '@vercel/analytics/next'
 import type { Metadata, Viewport } from 'next'
-import { Plus_Jakarta_Sans } from 'next/font/google'
+import { Noto_Sans_Khmer } from 'next/font/google'
 import Script from 'next/script'
 import './globals.css'
 
-const jakarta = Plus_Jakarta_Sans({
-  subsets: ['latin'],
-  variable: '--font-jakarta',
+const notoSansKhmer = Noto_Sans_Khmer({
+  subsets: ['khmer', 'latin'],
+  weight: ['400', '500', '600', '700'],
+  variable: '--font-noto-sans-khmer',
+  display: 'swap',
 })
 
 export const metadata: Metadata = {
@@ -50,7 +52,7 @@ export default function RootLayout({
   children: React.ReactNode
 }>) {
   return (
-    <html lang="en" className={`light ${jakarta.variable}`} suppressHydrationWarning>
+    <html lang="en" className={`light ${notoSansKhmer.variable}`} suppressHydrationWarning>
       <body className="bg-background font-sans antialiased">
         {/* Telegram WebApp SDK — exposes window.Telegram.WebApp inside Telegram.
             No bot token is ever used on the client. Loaded before the app is
